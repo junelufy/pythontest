@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+data/
+*.zip
+*.sqlite3
+*.db
+*.parquet
+.env
+artifacts/
