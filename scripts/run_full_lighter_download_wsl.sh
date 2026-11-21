@@ -8,6 +8,10 @@ if [ -z "${OXARCHIVE_API_KEY:-}" ]; then
   export OXARCHIVE_API_KEY
 fi
 
+# Verify every API data type with a tiny request before spending credits on 30 days.
+echo "First validating XAU/PAXG book, candles, funding and trades on a short interval."
+python3 scripts/download_lighter_oxarchive.py --days 0.04 --symbols XAU PAXG --granularity checkpoint --depth 20 --output data/lighter_probe_all
+
 OUT="data/lighter_fresh_20261122"
 mkdir -p "$OUT"
 echo "Collecting NEW ~29.9 days: Lighter XAU/PAXG L2 depth=20, 1m OHLCV, funding, trades."
