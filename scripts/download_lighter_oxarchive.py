@@ -123,11 +123,16 @@ def init(db):
     db.commit()
 
 def collect(db,base,kind,symbol,start,end,key,granularity,depth):
-    if db.execute("select 1 from chunks where symbol=? and kind=? and begin_ms=? and end_ms=?",(symbol,kind,start,end)).fetchone():
-        print(f"{symbol} {kind}: SKIP already downloaded")
-        return
     folder=base/kind/symbol;folder.mkdir(parents=True,exist_ok=True)
     final=folder/f"{start}_{end}.jsonl.gz"
+    done=db.execute("select 1 from chunks where symbol=? and kind=? and begin_ms=? and end_ms=?",(symbol,kind,start,end)).fetchone()
+    if done and final.is_file():
+        print(f"{symbol} {kind}: SKIP already downloaded")
+        return
+    if done and not final.is_file():
+        # Recover a previous crash between database commit and writing the raw file.
+        db.execute("delete from chunks where symbol=? and kind=? and begin_ms=? and end_ms=?",(symbol,kind,start,end))
+        db.commit()
     tmp=folder/f"{start}_{end}.partial"
     rows=[];count=0
     try:
@@ -137,6 +142,9 @@ def collect(db,base,kind,symbol,start,end,key,granularity,depth):
                 for item in batch:
                     out.write(json.dumps(item,separators=(",",":"),ensure_ascii=False)+"\n")
                     if kind in ("book","candles","funding"):rows.append(item)
+        # Ensure durable source bytes exist before marking the database chunk complete.
+        # If the SQLite transaction fails, the next run safely fetches again.
+        tmp.replace(final)
         with db:
             for item in rows:
                 if kind=="book":
@@ -148,7 +156,6 @@ def collect(db,base,kind,symbol,start,end,key,granularity,depth):
                     rate=item.get("funding_rate",item.get("rate"))
                     db.execute("insert or replace into funding values(?,?,?,?)",(symbol,row_time(item),str(rate) if rate is not None else None,json.dumps(item)))
             db.execute("insert into chunks values(?,?,?,?,?)",(symbol,kind,start,end,count))
-        tmp.replace(final)
         print(f"{symbol} {kind}: DONE {count:,} records",flush=True)
     finally:
         if tmp.exists():tmp.unlink()
@@ -167,14 +174,31 @@ def main():
     if not key:sys.exit("OXARCHIVE_API_KEY missing (do not share it in chat)")
     if not (0<a.days<=30 and a.depth>0 and a.chunk_hours>0):
         sys.exit("Invalid arguments")
-    now=datetime.now(UTC)
-    end=now-timedelta(minutes=30)
-    begin=now-timedelta(days=a.days)+timedelta(minutes=5)
-    if begin>=end:
-        sys.exit("Range too short; try --days 0.04")
-    begin_ms=timestamp(begin.isoformat());end_ms=timestamp(end.isoformat())
-    print("Requested UTC:",begin.isoformat(),"to",end.isoformat(),flush=True)
+    # Freeze the requested window on first run. Without this, re-running after
+    # interruption would shift all chunk boundaries and download everything twice.
     base=Path(a.output);base.mkdir(parents=True,exist_ok=True)
+    range_file=base/"DOWNLOAD_RANGE.json"
+    options={"days":a.days,"symbols":a.symbols,"granularity":a.granularity,
+             "depth":a.depth,"skip":a.skip,"chunk_hours":a.chunk_hours}
+    if range_file.is_file():
+        saved=json.loads(range_file.read_text())
+        if saved["options"]!=options:
+            sys.exit("Existing output uses different options; reuse the original options or a new --output")
+        begin_ms=int(saved["begin_ms"])
+        end_ms=int(saved["end_ms"])
+        print("RESUME frozen interval from",range_file,flush=True)
+    else:
+        now=datetime.now(UTC)
+        end=(now-timedelta(minutes=30)).replace(second=0,microsecond=0)
+        begin=end-timedelta(days=a.days)+timedelta(minutes=5)
+        if begin>=end:
+            sys.exit("Range too short; try --days 0.04")
+        begin_ms=timestamp(begin.isoformat());end_ms=timestamp(end.isoformat())
+        range_file.write_text(json.dumps({"begin_ms":begin_ms,"end_ms":end_ms,
+                                         "options":options},indent=2))
+    begin=datetime.fromtimestamp(begin_ms/1000,UTC)
+    end=datetime.fromtimestamp(end_ms/1000,UTC)
+    print("Requested UTC:",begin.isoformat(),"to",end.isoformat(),flush=True)
     db=sqlite3.connect(base/"lighter_marketdata.sqlite3");init(db)
     try:
         for sym in a.symbols:
