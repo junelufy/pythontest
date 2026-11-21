@@ -2,21 +2,26 @@
 import ast
 import io
 import sqlite3
+import tempfile
 import zipfile
 from pathlib import Path
 import pandas as pd
 
 def _sqlite(blob, symbol=None):
-    conn=sqlite3.connect(":memory:")
-    try:
-        conn.deserialize(blob)
-        if symbol is None:
-            return sorted([r[0] for r in conn.execute("select distinct symbol from candles")])
-        return pd.read_sql_query(
-            "select ts_ms,open,high,low,close from candles where symbol=? order by ts_ms",
-            conn,params=(symbol,))
-    finally:
-        conn.close()
+    # Original snapshots can use WAL journal mode; deserialize() may fail.
+    # Use an isolated read-only temp copy instead.
+    with tempfile.TemporaryDirectory(prefix="backtest_db_") as tmp:
+        path=Path(tmp)/"source.sqlite3"
+        path.write_bytes(blob)
+        conn=sqlite3.connect(f"file:{path}?mode=ro&immutable=1",uri=True)
+        try:
+            if symbol is None:
+                return sorted([r[0] for r in conn.execute("select distinct symbol from candles")])
+            return pd.read_sql_query(
+                "select ts_ms,open,high,low,close from candles where symbol=? order by ts_ms",
+                conn,params=(symbol,))
+        finally:
+            conn.close()
 
 def _source(name, blob):
     ext=Path(name).suffix.lower()
