@@ -17,8 +17,10 @@ def _sqlite(blob, symbol=None):
         try:
             if symbol is None:
                 return sorted([r[0] for r in conn.execute("select distinct symbol from candles")])
+            available = {r[1] for r in conn.execute("pragma table_info(candles)")}
+            vol = "base_volume" if "base_volume" in available else "NULL as base_volume"
             return pd.read_sql_query(
-                "select ts_ms,open,high,low,close from candles where symbol=? order by ts_ms",
+                f"select ts_ms,open,high,low,close,{vol} from candles where symbol=? order by ts_ms",
                 conn,params=(symbol,))
         finally:
             conn.close()
@@ -58,7 +60,11 @@ def candles(name,blob,symbol):
     for c in ("open","high","low","close"):df[c]=pd.to_numeric(df[c],errors="raise")
     df=df.sort_values("ts_ms").drop_duplicates("ts_ms").reset_index(drop=True)
     if df.empty:raise ValueError("No candles for selected symbol")
-    return df[["ts_ms","open","high","low","close"]]
+    cols = ["ts_ms","open","high","low","close"]
+    if "base_volume" in df.columns:
+        df["base_volume"] = pd.to_numeric(df["base_volume"],errors="coerce")
+        cols.append("base_volume")
+    return df[cols]
 
 def synthetic(expression,series):
     merged=None
