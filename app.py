@@ -8,12 +8,13 @@ import plotly.graph_objects as go
 import streamlit as st
 from workbench.data import symbols,candles,synthetic
 from workbench.engine import open_position,close_position,PendingOrder,limit_touch
+from workbench.quotes import read_quotes,quote_at
 
 st.set_page_config(page_title="Trading Backtest Workstation",layout="wide")
 st.title("Historical Manual Trading Workstation")
-st.caption("RESEARCH ONLY | UTC | Market fill = visible candle close proxy | Limit touch = assumed fill")
+st.caption("RESEARCH ONLY | UTC | Historical Bid/Ask if imported; otherwise candle-close proxy | Limit touch = assumed fill")
 
-defaults={"assets":{},"positions":[],"pending":[],"ledger":[],"cursor":0,
+defaults={"assets":{},"books":{},"positions":[],"pending":[],"ledger":[],"cursor":0,
           "next_id":1,"initial":10000.0,"fee":0.0}
 for k,v in defaults.items():
     if k not in st.session_state:st.session_state[k]=v
@@ -33,6 +34,25 @@ def mark(symbol,ts):
 
 def reset():
     S.positions=[];S.pending=[];S.ledger=[];S.cursor=0;S.next_id=1
+
+def current_quote(symbol, ts):
+    return quote_at(S.books.get(symbol), ts, int(S.quote_age_seconds)*1000)
+
+def execution_price(symbol, side, ts):
+    q, _, fresh = current_quote(symbol, ts)
+    if fresh:
+        return float(q.ask if side=="BUY" else q.bid), "HISTORICAL_BEST_ASK" if side=="BUY" else "HISTORICAL_BEST_BID"
+    return mark(symbol,ts), "CANDLE_CLOSE_PROXY"
+
+def has_enough_top_volume(symbol, side, qty, ts):
+    q, _, fresh = current_quote(symbol, ts)
+    if not fresh:
+        return True
+    amount = q.ask_size if side=="BUY" else q.bid_size
+    return pd.isna(amount) or float(amount)+1e-10 >= qty
+
+def liquidation_price(p, ts):
+    return execution_price(p.symbol, "SELL" if p.side=="BUY" else "BUY", ts)[0]
 
 def move(target,times):
     target=max(0,min(int(target),len(times)-1))
@@ -73,8 +93,24 @@ with st.sidebar:
                 st.success("Loaded "+alias)
         except Exception as err:st.error(str(err))
     st.write("Assets:",", ".join(assets) or "none")
+    if assets:
+        st.divider()
+        st.subheader("Historical Bid / Ask")
+        st.caption("Optional top-of-book snapshots, not current live quotes. Columns: ts_ms,symbol,bid,ask,bid_size,ask_size. Sizes must be in asset units.")
+        book_upload=st.file_uploader("Import quotes CSV / ZIP / Parquet / SQLite",type=["csv","zip","parquet","sqlite3","db"],key="book_upload")
+        book_symbol=st.selectbox("Load quotes for asset",list(assets),key="book_symbol")
+        book_filter=st.text_input("Source symbol in file (empty = all)",value=book_symbol,key="book_filter")
+        if book_upload is not None and st.button("Load historical Bid/Ask"):
+            try:
+                qdf=read_quotes(book_upload.name,book_upload.getvalue(),book_filter.strip() or None)
+                S.books[book_symbol]=qdf
+                st.success(f"Loaded {len(qdf):,} historical quote snapshots for {book_symbol}")
+            except Exception as exc:st.error(str(exc))
+        S.quote_age_seconds=st.number_input("Maximum quote age (seconds)",min_value=1,value=int(S.get("quote_age_seconds",120)),step=30)
+    else:
+        S.quote_age_seconds=120
     if st.button("Clear data and scenario"):
-        assets.clear();reset();st.rerun()
+        assets.clear();S.books.clear();reset();st.rerun()
     if not S.positions and not S.ledger:
         S.initial=st.number_input("Starting balance (USD-like)",value=float(S.initial),min_value=1.0)
     S.fee=st.number_input("Fee % / fill (assumption)",value=float(S.fee)*100,min_value=0.,step=.01,format="%.3f")/100
@@ -123,6 +159,34 @@ try:
     st.caption("Analytical series, not executable spread. No synthetic OHLC approximation.")
 except Exception as err:st.warning("Synthetic: "+str(err))
 
+st.header("Historical Bid / Ask / Liquidity at replay time")
+st.caption("Bid/Ask sizes are displayed volume at BEST price level only; OHLC base volume is total executed volume in the minute, not bid/ask liquidity.")
+book_rows=[]
+for s, df in assets.items():
+    visible=df[df.ts_ms<=ts]
+    if visible.empty:continue
+    last=visible.iloc[-1]
+    row,age,fresh=current_quote(s,ts)
+    status="BID/ASK MISSING"
+    if row is not None:
+        status="HISTORICAL QUOTE" if fresh else f"STALE {age/1000:.0f}s"
+    book_rows.append({
+        "Asset":s,
+        "Best Bid":float(row.bid) if row is not None else None,
+        "Bid Volume (best level)":float(row.bid_size) if row is not None and pd.notna(row.bid_size) else None,
+        "Best Ask":float(row.ask) if row is not None else None,
+        "Ask Volume (best level)":float(row.ask_size) if row is not None and pd.notna(row.ask_size) else None,
+        "Last Candle Close (proxy)":float(last.close),
+        "Candle High":float(last.high),
+        "Candle Low":float(last.low),
+        "Candle Traded Volume":float(last.base_volume) if "base_volume" in last.index and pd.notna(last.base_volume) else None,
+        "Quote Status":status
+    })
+st.dataframe(pd.DataFrame(book_rows),hide_index=True,use_container_width=True)
+if any(x["Quote Status"]!="HISTORICAL QUOTE" for x in book_rows):
+    st.warning("Real historical Bid/Ask and bid/ask volumes are unavailable or stale for some assets. Only candle OHLC and total traded volume can be shown. Upload quote/book history above; no artificial bid/ask is generated.")
+else:
+    st.info("Prices are historical top-of-book snapshots, NOT guaranteed execution prices. For large orders full depth and matching sequence are still required.")
 st.header("Simulated manual trading")
 left,right=st.columns(2)
 with left:
@@ -136,10 +200,14 @@ with left:
     if submit:
         if symbol not in quotes:st.error("No visible price")
         elif typ=="MARKET":
-            p=open_position(nextid(),symbol,side,qty,quotes[symbol],ts,S.fee)
-            S.positions.append(p)
-            S.ledger.append({"ts_ms":ts,"amount":-qty*quotes[symbol]*S.fee,"kind":"entry_fee","id":p.id})
-            st.success("ASSUMED Market fill at last visible candle close")
+            if not has_enough_top_volume(symbol,side,qty,ts):
+                st.error("Top-of-book size is smaller than order quantity. Cannot assume full fill at best price without deeper Order Book. Reduce quantity or import full-depth data (not yet supported).")
+            else:
+                px,source=execution_price(symbol,side,ts)
+                p=open_position(nextid(),symbol,side,qty,px,ts,S.fee)
+                S.positions.append(p)
+                S.ledger.append({"ts_ms":ts,"amount":-qty*px*S.fee,"kind":"entry_fee","id":p.id})
+                st.success(f"Simulated Market fill at {px:.5f} ({source}; snapshot, not guaranteed)")
         else:
             S.pending.append(PendingOrder(nextid(),symbol,side,qty,limit,ts,S.fee))
             st.info("Limit pending; next candle high/low touch assumed fill")
@@ -147,17 +215,22 @@ with right:
     active=[p for p in S.positions if p.remaining>0]
     if active:
         rows=[{"ID":p.id,"Symbol":p.symbol,"Side":p.side,"Qty":p.remaining,"Entry":p.entry_price,
-               "Mark":quotes.get(p.symbol),"Floating":p.floating(quotes[p.symbol]) if p.symbol in quotes else None}
+               "Exit Mark (Bid/Ask or Close)":liquidation_price(p,ts),"Floating":p.floating(liquidation_price(p,ts)) if p.symbol in quotes else None}
               for p in active]
         st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
         with st.form("close_form"):
             chosen=st.selectbox("Close position ID",[p.id for p in active])
             p=next(p for p in active if p.id==chosen)
             closeqty=st.number_input("Partial close qty",min_value=.000001,max_value=p.remaining,value=p.remaining,format="%.6f")
-            if st.form_submit_button("Close at visible candle close"):
-                pnl=close_position(p,closeqty,quotes[p.symbol])
-                S.ledger.append({"ts_ms":ts,"amount":pnl,"kind":"close_net","id":p.id})
-                st.success(f"Close net P/L {pnl:+.4f}")
+            if st.form_submit_button("Close position (historical quote if available)"):
+                close_side="SELL" if p.side=="BUY" else "BUY"
+                if not has_enough_top_volume(p.symbol,close_side,closeqty,ts):
+                    st.error("Insufficient volume at best quote to simulate full close at that price.")
+                else:
+                    price,source=execution_price(p.symbol,close_side,ts)
+                    pnl=close_position(p,closeqty,price)
+                    S.ledger.append({"ts_ms":ts,"amount":pnl,"kind":"close_net","id":p.id})
+                    st.success(f"Close net P/L {pnl:+.4f} ({source})")
     else:st.info("No open positions")
     waiting=[o for o in S.pending if o.status=="PENDING"]
     if waiting:
@@ -167,15 +240,15 @@ with right:
             next(o for o in waiting if o.id==cancel).status="CANCELED";st.rerun()
 
 realized=sum(e["amount"] for e in S.ledger)
-floating=sum(p.floating(quotes[p.symbol]) for p in S.positions if p.remaining and p.symbol in quotes)
+floating=sum(p.floating(liquidation_price(p,ts)) for p in S.positions if p.remaining and p.symbol in quotes)
 balance=S.initial+realized
 m=st.columns(4)
 for col,title,value in zip(m,["Balance","Realized (including fees)","Floating","Equity"],
                             [balance,realized,floating,balance+floating]):
     col.metric(title,f"{value:,.4f}")
-st.caption("Important: USD-like unit assumption; no quote conversion, funding, leverage, margin, bid/ask or real execution depth.")
+st.caption("Important: Bid/Ask only when historical snapshots imported and fresh. Top-level size is not full depth; market fills are simulated. Without quotes, OHLC Close proxies remain. No funding, margin, liquidation or currency conversion.")
 scenario={"positions":[asdict(p) for p in S.positions],"pending":[asdict(o) for o in S.pending],
           "ledger":S.ledger,"initial":S.initial,"replay_ts_ms":ts,
           "realized":realized,"floating":floating,"equity":balance+floating,
-          "limitations":["OHLC proxy fills","No funding","No margin","No options"]}
+          "limitations":["Top-of-book only; not full depth","OHLC proxy when no quotes","No funding","No margin","No options"]}
 st.download_button("Export scenario JSON",json.dumps(scenario,indent=2),file_name="scenario.json")
