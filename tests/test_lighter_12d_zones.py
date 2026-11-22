@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.summarize_lighter_12d_zones import compute, FROZEN_START, DAY_MS
+from scripts.summarize_lighter_12d_zones import compute, FROZEN_START, FROZEN_END, DAY_MS
 from scripts.analyze_lighter_spread_feasibility import iso
 
 
