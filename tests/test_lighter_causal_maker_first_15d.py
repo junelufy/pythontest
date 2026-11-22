@@ -322,3 +322,46 @@ def test_diagnostic_csv_preserves_fields_from_different_event_types(tmp_path):
     assert rows[0]["maker_limit"]=="100"
     assert rows[1]["public_price"]=="99"
     assert rows[2]["maker_pending_seconds"]=="120"
+
+
+
+def test_spread_move_from_xau_only_does_not_imply_paxg_maker_fill():
+    t=TEST_START
+    # XAU changes the SPREAD while PAXG market has zero public trades.
+    # A touched spread grid IS NOT equivalent to a PAXG maker execution.
+    x=[book(t,5000.),book(t+60000,5000.),
+       book(t+120000,5002.),book(t+180000,5004.)]
+    p=[book(t+1000,5003.),book(t+61000,4999.),
+       book(t+121000,4999.),book(t+181000,4999.)]
+    r,closed,terminal=run_scenario(x,p,[],ZONES,.5,2.)
+    assert r["paxg_maker_orders_posted"]==1
+    assert r["maker_through_price_order_full_fills_assumed"]==0
+    assert r["maker_orders_with_any_public_trade_allocated"]==0
+    assert r["xau_hedges_executed"]==0
+    assert r["tp_closed_positions"]==0
+    assert closed==[] and terminal==[]
+
+
+def test_exact_maker_print_smaller_than_visible_queue_is_not_a_fill():
+    x,p,_=fixture(final_paxg_bid=4998.5)
+    tape=[Tape(TEST_START+62000,4999.,.20,"A","small-exact-print")]
+    r,closed,terminal=run_scenario(x,p,tape,ZONES,.5,2.)
+    assert r["maker_limit_exact_trade_prints"]==1
+    assert r["maker_orders_with_any_public_trade_allocated"]==0
+    assert r["maker_through_price_order_full_fills_assumed"]==0
+    assert r["xau_hedges_executed"]==0
+    assert r["terminal_pending_unfilled"]==1
+    assert closed==[] and terminal==[]
+
+
+def test_wrong_aggressor_price_through_does_not_execute_passive_buy():
+    x,p,_=fixture(final_paxg_bid=4998.5)
+    # Passive BUY at 4999 needs aggressor SELL (A). An aggressor BUY (B)
+    # at 4998.5 is not evidence that a resting BUY at 4999 filled.
+    tape=[Tape(TEST_START+62000,4998.5,1.,"B","wrong-side-through")]
+    r,closed,terminal=run_scenario(x,p,tape,ZONES,.5,2.)
+    assert r["potential_public_prints_at_or_through_pending_limit"]==0
+    assert r["maker_through_price_order_full_fills_assumed"]==0
+    assert r["xau_hedges_executed"]==0
+    assert r["terminal_pending_unfilled"]==1
+    assert closed==[] and terminal==[]
