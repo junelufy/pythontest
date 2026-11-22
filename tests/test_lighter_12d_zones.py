@@ -60,3 +60,22 @@ def test_reject_any_future_holdout_observation(tmp_path):
         inp.write(f"{FROZEN_START+12*DAY_MS},0.5,0,0,0,0\n")
     with pytest.raises(ValueError,match="outside frozen"):
         compute(samples,summary,tmp_path/"out")
+
+
+def test_twelve_day_reader_does_not_open_corrupt_holdout_file(tmp_path):
+    import gzip
+    from scripts.calibrate_lighter_spread_5d import read_calibration_books
+    root=tmp_path/"dataset"
+    folder=root/"book"/"XAU"
+    folder.mkdir(parents=True)
+    with gzip.open(folder/f"{FROZEN_START}_{FROZEN_START+DAY_MS}.jsonl.gz","wt") as out:
+        out.write(json.dumps({
+            "timestamp":iso(FROZEN_START+1000),
+            "bids":[["4000", "1"]],
+            "asks":[["4001", "1"]]
+        })+"\n")
+    # This future file fails immediately if the holdout is opened.
+    (folder/f"{FROZEN_END}_{FROZEN_END+DAY_MS}.jsonl.gz").write_bytes(b"CORRUPT FUTURE")
+    timestamps, books=read_calibration_books(root,"XAU",FROZEN_START,FROZEN_END)
+    assert len(books)==1
+    assert timestamps[0]<FROZEN_END
