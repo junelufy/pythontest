@@ -92,6 +92,21 @@ def paired(x,p,begin,end,step_minutes,max_age):
             result.append((tick,xb,pb))
     return result
 
+def quantiles(values):
+    """Linear-interpolation percentiles of observed per-minute executable spread."""
+    if not values:
+        return {}
+    ordered=sorted(values)
+    n=len(ordered)
+    result={}
+    for pct in (1,5,10,25,50,75,90,95,99,99.5,99.9):
+        point=(n-1)*pct/100
+        low=int(point)
+        high=min(low+1,n-1)
+        value=ordered[low]+(ordered[high]-ordered[low])*(point-low)
+        result[str(pct)]=round(value,5)
+    return result
+
 def executable(event,qty):
     t,x,p=event
     xs=vwap(x.bid,qty)
@@ -208,7 +223,11 @@ def main(argv=None):
                     "maker_signal_gte_31":sum(v>=31 for v in maker),
                     "taker_signal_gte_25":sum(v>=25 for v in taker),
                     "max_maker_signal":max(maker) if maker else None,
-                    "max_taker_signal":max(taker) if taker else None}
+                    "max_taker_signal":max(taker) if taker else None,
+                    "maker_signal_quantiles_usd_per_oz":quantiles(maker),
+                    "taker_signal_quantiles_usd_per_oz":quantiles(taker),
+                    "maker_signal_minutes_gte_grid":{str(v):sum(x>=v for x in maker) for v in a.grids},
+                    "taker_signal_minutes_gte_grid":{str(v):sum(x>=v for x in taker) for v in a.grids}}
         diagnostics.append(diagnostic)
         print("SIGNALS:",diagnostic,flush=True)
         for mode in ("taker","maker_assumed"):
@@ -225,6 +244,8 @@ def main(argv=None):
         writer.writerows(rows)
     valid=[r for r in rows if r["closed_trades"]>=10 and not r["unclosed_positions"]]
     valid.sort(key=lambda x:x["net_usd"],reverse=True)
+    traded=[r for r in rows if r["closed_trades"]>0]
+    traded.sort(key=lambda x:x["net_usd"],reverse=True)
     summary={"study":"27-day XAU/PAXG L2 conditional feasibility, NOT verified fill backtest",
              "start_utc":iso(begin),"end_utc":iso(end),
              "paired_minutes":len(events),"first_pair_utc":iso(events[0][0]),
@@ -232,6 +253,9 @@ def main(argv=None):
              "depth_availability":diagnostics,
              "scenario_count":len(rows),
              "best_independent_scenarios_illustrative_only":valid[:12],
+             "scenarios_with_at_least_one_closed_trade":len(traded),
+             "best_independent_traded_scenarios_illustrative_only":traded[:12],
+             "worst_independent_traded_scenarios_illustrative_only":traded[-6:],
              "caveats":[
                 "Maker PAXG best-bid entries are assumed immediately filled; this is an optimistic upper-bound, NOT actual fills.",
                 "Taker fills assume all 20 levels remain executable at recorded snapshot prices.",
