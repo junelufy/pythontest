@@ -85,3 +85,31 @@ def synthetic(expression,series):
     result=ev(ast.parse(expression,mode="eval"))
     if not isinstance(result,pd.Series):raise ValueError("Reference an asset")
     return pd.DataFrame({"ts_ms":merged.ts_ms,"value":result}).dropna()
+
+def symbols_from_path(path):
+    """List assets directly from a completed local SQLite database without loading all bytes."""
+    p=Path(path).expanduser().resolve()
+    if not p.is_file(): raise FileNotFoundError(str(p))
+    if p.suffix.lower() not in (".sqlite3",".sqlite",".db"):
+        if p.stat().st_size>300_000_000: raise ValueError("Non-SQLite source >300 MB")
+        return symbols(p.name,p.read_bytes())
+    with sqlite3.connect(p.as_uri()+"?mode=ro",uri=True) as db:
+        return sorted([str(r[0]) for r in db.execute("select distinct symbol from candles")])
+
+
+def candles_from_path(path,symbol):
+    """Read just one candle series via SQL, not the entire multi-table 30-day archive."""
+    p=Path(path).expanduser().resolve()
+    if not p.is_file(): raise FileNotFoundError(str(p))
+    if p.suffix.lower() not in (".sqlite3",".sqlite",".db"):
+        if p.stat().st_size>300_000_000: raise ValueError("Non-SQLite source >300 MB")
+        return candles(p.name,p.read_bytes(),symbol)
+    with sqlite3.connect(p.as_uri()+"?mode=ro",uri=True) as db:
+        cols={r[1] for r in db.execute("pragma table_info(candles)")}
+        if not set(("symbol","ts_ms","open","high","low","close")).issubset(cols):
+            raise ValueError("SQLite candles schema missing required columns")
+        v="base_volume" if "base_volume" in cols else "NULL as base_volume"
+        df=pd.read_sql_query(f"select ts_ms,open,high,low,close,{v} from candles where symbol=? order by ts_ms",
+                             db,params=(symbol,))
+    if df.empty: raise ValueError("No candles for "+str(symbol))
+    return df.sort_values("ts_ms").drop_duplicates("ts_ms").reset_index(drop=True)
