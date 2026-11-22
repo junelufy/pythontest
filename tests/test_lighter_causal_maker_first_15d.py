@@ -132,3 +132,49 @@ def test_no_premature_exit_no_historical_lookahead():
     assert r["terminal_open_hedged_grids"]==1
     assert len(terminal)==1
     assert r["closed_net_usd"]==0
+
+
+
+def test_short_pending_cancel_only_when_spread_falls_below_its_grid():
+    t=TEST_START
+    # XAU maker short-reference = XAU executable sell - PAXG best bid.
+    # -3 arms grid -2; +1 crosses and posts; -2 equals threshold (keep);
+    # -2.01 goes outside (cancel).
+    x=[book(t,5000),book(t+60000,5000),book(t+120000,5000),
+       book(t+180000,5000)]
+    p=[book(t+1000,5003),book(t+61000,4999),
+       book(t+121000,5002),book(t+181000,5002.01)]
+    r,closed,terminal=run_scenario(x,p,[],ZONES,.5,2.)
+    assert r["paxg_maker_orders_posted"]==1
+    assert r["maker_orders_canceled_on_spread_reversion"]==1
+    assert r["terminal_pending_unfilled"]==0
+    assert r["xau_hedges_executed"]==0
+    assert closed==[] and terminal==[]
+
+
+def test_long_pending_cancel_only_when_spread_rises_above_its_grid():
+    t=TEST_START
+    # Long-reference = XAU executable buy - PAXG best ask.
+    # -3 arms level -8; -9 enters; return to ~ -7 cancels unfilled.
+    x=[book(t,5000),book(t+60000,5000),book(t+120000,5000)]
+    p=[book(t+1000,5003),book(t+61000,5009),
+       book(t+121000,5007)]
+    longonly={"short":[],"long":[("P10",-8.)]}
+    r,closed,terminal=run_scenario(x,p,[],longonly,.5,3.)
+    assert r["paxg_maker_orders_posted"]==1
+    assert r["maker_orders_canceled_on_spread_reversion"]==1
+    assert r["terminal_pending_unfilled"]==0
+    assert closed==[] and terminal==[]
+
+
+def test_pending_maker_remains_after_more_than_five_minutes_if_spread_in_zone():
+    t=TEST_START
+    x=[book(t,5000),book(t+60000,5000),book(t+8*60000,5000)]
+    p=[book(t+1000,5003),book(t+61000,4999),
+       book(t+8*60000+1000,4999)]
+    r,closed,terminal=run_scenario(x,p,[],ZONES,.5,2.)
+    assert r["paxg_maker_orders_posted"]==1
+    assert r["maker_orders_canceled_on_spread_reversion"]==0
+    assert r["terminal_pending_unfilled"]==1
+    assert r["tp_closed_positions"]==0
+    assert closed==[] and terminal==[]
