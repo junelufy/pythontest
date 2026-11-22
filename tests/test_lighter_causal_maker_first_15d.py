@@ -80,7 +80,7 @@ def test_three_grid_orders_share_public_print_volume_and_queue_ahead():
     # 0.5 oz quote-ahead consumed; 0.1 oz allocated to exactly one order.
     assert r["maker_orders_with_any_public_trade_allocated"]==1
     assert r["maker_matched_public_volume_oz"]==.1
-    assert sum(t["qty_oz"] for t in closed)==.1
+    assert abs(sum(t["qty_oz"] for t in closed) - .1) < 1e-9
     assert r["terminal_pending_unfilled"]==2
 
 
