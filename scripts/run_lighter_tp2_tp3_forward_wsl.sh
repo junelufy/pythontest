@@ -21,7 +21,7 @@ if [ ! -d "$DATA/book/XAU" ] || [ ! -d "$DATA/book/PAXG" ]; then
   exit 2
 fi
 
-echo '=== Unit tests: long/short grids; TP $2/$3; maker/taker; four-leg fees; MTM ==='
+echo "=== Unit tests: long/short grids; TP 2 vs 3 USD per oz; maker/taker; four-leg fees; MTM ==="
 python3 -m pytest -q tests/test_lighter_forward_15d_grid.py tests/test_lighter_12d_zones.py tests/test_lighter_spread_feasibility.py
 
 echo "=== Primary historical forward window: Nov 04 01:00 - Nov 19 00:00 UTC (exclusive) ==="
