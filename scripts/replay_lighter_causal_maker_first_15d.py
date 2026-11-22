@@ -38,7 +38,7 @@ from scripts.forwardtest_lighter_spread_grid_15d import (
 MAX_HEDGE_DELAY_MS = 5 * 60_000  # diagnostic only; no hedge-timeout cancellation
 MAX_XAU_QUOTE_AGE_MS = 20_000
 MAX_PAXG_QUOTE_AGE_MS = 20_000
-PRICE_TOLERANCE = 0.011
+PRICE_TOLERANCE = 1e-8  # numeric precision only; no 1-cent price leeway
 
 
 @dataclass
@@ -337,7 +337,7 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
                 )
             ]
             if eligible:
-                exact=[g for g in eligible if abs(g.limit-trade.price)<=PRICE_TOLERANCE]
+                exact=[g for g in eligible if group_key(action,g.limit)==group_key(action,trade.price)]
                 counters["potential_at_or_through_public_prints"]+=1
                 counters["potential_at_or_through_trade_size_milli_oz"]+=round(trade.qty*1000)
                 if exact:counters["potential_exact_public_prints"]+=1
