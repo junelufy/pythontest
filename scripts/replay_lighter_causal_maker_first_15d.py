@@ -11,6 +11,10 @@ subsequent PAXG TAKER prints at the exact limit, consume visible queue ahead
 (shared by ALL grids) -> partial PAXG fill -> hedge filled quantity using the
 NEXT XAU L2 snapshot (never an older quote) -> TP from executable L2 prices.
 
+Unfilled maker orders remain pending until the same frozen entry spread
+returns outside that grid zone: SHORT cancels when ref < grid, LONG when
+ref > grid. No arbitrary elapsed-time cancellation.
+
 Frozen zones and TP 2/3 USD/oz remain unchanged. No stop loss or timeout for
 HEDGED positions; only pending *unfilled* maker quotes expire after 5 minutes.
 """
@@ -30,10 +34,10 @@ from scripts.forwardtest_lighter_spread_grid_15d import (
     current_reference, gross_oz, price_is_inside, price_is_outside, vwap_slice
 )
 
-# Frozen before executing this revised historical replay.
-PENDING_TTL_MS = 5 * 60_000
-MAX_HEDGE_DELAY_MS = 5 * 60_000
+# Snapshot freshness for evaluating spread conditions, not an order lifetime.
+MAX_HEDGE_DELAY_MS = 5 * 60_000  # diagnostic only; no hedge-timeout cancellation
 MAX_XAU_QUOTE_AGE_MS = 20_000
+MAX_PAXG_QUOTE_AGE_MS = 20_000
 PRICE_TOLERANCE = 0.011
 
 
@@ -194,23 +198,24 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
             if not group.orders:
                 del groups[key]
 
-    def cancel_unfilled(now):
+    def cancel_pending_outside_zone(ref):
+        """Use the SAME qty-aware maker-reference spread used for entry zones.
+
+        SHORT: XAU executable SELL - current PAXG best BID < grid threshold.
+        LONG:  XAU executable BUY  - current PAXG best ASK > grid threshold.
+        At equality the order stays pending. Quote must be fresh before call.
+        Filled/hedge_wait/open positions are never cancelled by this rule.
+        """
         for state in states.values():
             if state.status!="pending":continue
-            order=None
-            for grp in groups.values():
-                for o in grp.orders:
-                    if o.grid_id==f"{state.direction}_{state.label}":
-                        order=o
-                        break
-                if order is not None:break
-            if order is None:
-                raise AssertionError("Pending grid missing maker order")
-            if now-order.placed_ms < PENDING_TTL_MS:continue
-            remove_from_group(order.grid_id)
+            value=ref[state.direction]
+            if value is None or not price_is_outside(state.direction,value,state.level):
+                continue
+            gridid=f"{state.direction}_{state.label}"
+            remove_from_group(gridid)
             state.status="flat"
             state.armed=False
-            counters["unfilled_maker_canceled_ttl"]+=1
+            counters["unfilled_maker_canceled_spread_reversion"]+=1
 
     def reserve(used,key,volume):
         used[key]=used.get(key,0.0)+volume
@@ -254,9 +259,13 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
         return total
 
     for t,kind,obj in timeline:
-        cancel_unfilled(t)
         if kind==0:
             active_x=obj
+            # Evaluate pending spread cancellation on a fresh XAU update too,
+            # not just PAXG updates. Never use a stale PAXG book for this.
+            if (active_p is not None and
+                0 <= t-active_p.ts <= MAX_PAXG_QUOTE_AGE_MS):
+                cancel_pending_outside_zone(current_reference((t,active_x,active_p),qty))
             # ONLY hedge AFTER the maker trade timestamp, from a later XAU L2.
             used={}
             for state in states.values():
@@ -328,6 +337,7 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
             continue
         ev=(t,active_x,active_p)
         ref=current_reference(ev,qty)
+        cancel_pending_outside_zone(ref)
         closing_used={}
         # First close hedged positions. At most one close per grid, and no reentry
         # into an unchanged zone immediately following the TP.
@@ -478,7 +488,7 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
         "complete_equity_mark_samples":counters["complete_equity_marks"],
         "incomplete_equity_mark_samples":counters["incomplete_equity_marks"],
         "max_maker_fill_to_xau_hedge_delay_s":round(max_hedge_delay_s,3),
-        "maker_orders_expired_without_fill":counters["unfilled_maker_canceled_ttl"],
+        "maker_orders_canceled_on_spread_reversion":counters["unfilled_maker_canceled_spread_reversion"],
         "paxg_snapshot_no_fresh_xau":counters["paxg_books_without_recent_xau"],
         "maker_limit_exact_trade_prints":counters["prints_at_active_limit"],
         "max_concurrent_nonflat_positions":max_concurrent,
@@ -542,7 +552,8 @@ def run(data,zones_path,output):
         "frozen_calibration":"12d daily-quantile grid, no new optimization",
         "date_start_utc":iso(TEST_START),"date_end_exclusive_utc":iso(TEST_END),
         "execution":{
-            "maker_order_ttl_seconds":PENDING_TTL_MS/1000,
+            "maker_order_time_to_live_seconds":None,
+            "maker_pending_cancel_rule":"SHORT when executable short maker-reference spread < frozen grid level; LONG when executable long maker-reference spread > frozen grid level; require fresh L2. Never cancel solely because 5 minutes elapsed.",
             "max_xau_quote_age_on_entry_exit_seconds":MAX_XAU_QUOTE_AGE_MS/1000,
             "paxg_maker_limit":"current PAXG best bid for BUY; best ask for SELL",
             "pending_queue":"visible best-level quantity ahead + FIFO across our grids at same price",
