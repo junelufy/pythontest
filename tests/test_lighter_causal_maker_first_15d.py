@@ -251,3 +251,21 @@ def test_pending_cancel_audit_log_exposes_zone_trigger_and_elapsed():
     assert cancels[0]["maker_pending_seconds"] > 0
     assert result["terminal_pending_unfilled"]==0
     assert not closed and not terminal
+
+
+
+def test_diagnostic_csv_preserves_fields_from_different_event_types(tmp_path):
+    import csv
+    from scripts.replay_lighter_causal_maker_first_15d import write_csv
+    target=tmp_path/"events.csv"
+    write_csv(target,[
+        {"time_utc":"2026-11-10T01:00:00Z","type":"POST","maker_limit":100},
+        {"time_utc":"2026-11-10T01:01:00Z","type":"PUBLIC_PRINT_AT_OR_THROUGH","public_price":99},
+        {"time_utc":"2026-11-10T01:02:00Z","type":"CANCEL_SPREAD","maker_pending_seconds":120},
+    ],["type"])
+    with target.open(newline="",encoding="utf8") as f:
+        rows=list(csv.DictReader(f))
+    assert len(rows)==3
+    assert rows[0]["maker_limit"]=="100"
+    assert rows[1]["public_price"]=="99"
+    assert rows[2]["maker_pending_seconds"]=="120"
