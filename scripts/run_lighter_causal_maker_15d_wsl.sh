@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 DATA="data/lighter_fresh_20261122"
 CAL="$DATA/CALIBRATION_12D_TWO_SIDED/zone_12d_summary.json"
 OUT="$DATA/CAUSAL_MAKER_FIRST_15D"
-DEST="/mnt/c/Users/June-ASUS/Downloads/LIGHTER_CAUSAL_MAKER_TP2_TP3_DIAGNOSTIC_15D.zip"
+DEST="/mnt/c/Users/June-ASUS/Downloads/LIGHTER_MAKER_PRICE_THROUGH_TP2_TP3_15D.zip"
 
 if [ ! -s "$CAL" ]; then
   echo "Missing 12-day frozen zones: $CAL" >&2
@@ -34,5 +34,5 @@ python3 -m zipfile -c "$DEST" \
   "$OUT/maker_order_evidence_diagnostic.csv"
 
 echo "Upload this ZIP:"
-echo 'C:\Users\June-ASUS\Downloads\LIGHTER_CAUSAL_MAKER_TP2_TP3_DIAGNOSTIC_15D.zip'
+echo 'C:\Users\June-ASUS\Downloads\LIGHTER_MAKER_PRICE_THROUGH_TP2_TP3_15D.zip'
 echo "Research replay only. Tape-matched maker execution and partial XAU hedges remain hypothetical."
