@@ -204,12 +204,13 @@ def test_pending_maker_remains_after_more_than_five_minutes_if_spread_in_zone():
 
 
 
-def test_price_through_trade_is_diagnostic_only_not_an_invented_fill():
+def test_price_through_buy_maker_fills_and_waits_for_next_xau_hedge():
     x,p,_=fixture(final_paxg_bid=4998.0)
     events=[]
-    # Aggressor SELL print below resting BUY limit 4999 implies possible
-    # swept bid, but source L2 cannot validate queue allocation.
-    tape=[Tape(TEST_START+62000,4998.8,.6,"A","through-one-print")]
+    # An aggressor SELL trade at 4998.8 passed the standing BUY maker
+    # limit 4999.0. Conditional on a live, accepted maker order and
+    # normal price priority, all 0.5 oz must have been executed at 4999.
+    tape=[Tape(TEST_START+62000,4998.8,.01,"A","through-one-print")]
     result,closed,terminal=run_scenario(
         x,p,tape,ZONES,.5,2.,event_log=events
     )
@@ -217,11 +218,63 @@ def test_price_through_trade_is_diagnostic_only_not_an_invented_fill():
     assert result["potential_public_prints_at_or_through_pending_limit"]==1
     assert result["potential_price_through_public_prints"]==1
     assert result["potential_exact_price_public_prints"]==0
-    assert result["maker_orders_with_any_public_trade_allocated"]==0
+    assert result["maker_orders_with_any_public_trade_allocated"]==1
+    assert result["maker_through_price_order_full_fills_assumed"]==1
+    assert result["maker_matched_public_volume_oz"]==.5
+    assert result["xau_hedges_executed"]==1
     assert result["tp_closed_positions"]==0
-    assert not closed and not terminal
-    assert [e["type"] for e in events].count("POST")==1
-    assert [e["type"] for e in events].count("PUBLIC_PRINT_AT_OR_THROUGH")==1
+    assert not closed and len(terminal)==1
+    assert terminal[0]["qty_oz"]==.5
+    assert [e["type"] for e in events].count("THROUGH_TRADE_PAPER_FULL_FILL")==1
+
+
+def test_price_through_sell_maker_fills_on_aggressive_buy_above_limit():
+    t=TEST_START
+    x=[book(t,5000),book(t+60000,5000),book(t+63000,5000)]
+    p=[book(t+1000,5003),
+       book(t+61000,5008.9,ask=5009.,size=.5),
+       book(t+64000,5008.9,ask=5009.)]
+    longonly={"short":[],"long":[("P10",-8.)]}
+    tape=[Tape(t+62000,5009.5,.01,"B","aggressor-buy-through-ask")]
+    r,closed,terminal=run_scenario(x,p,tape,longonly,.5,3.)
+    assert r["paxg_maker_orders_posted"]==1
+    assert r["maker_through_price_order_full_fills_assumed"]==1
+    assert r["xau_hedges_executed"]==1
+    assert r["terminal_open_hedged_grids"]==1
+    assert r["maker_matched_public_volume_oz"]==.5
+    assert closed==[]
+    assert len(terminal)==1
+
+
+def test_three_grid_price_through_does_not_double_count_public_trade_volume():
+    x,p,_=fixture(final_paxg_bid=4998.)
+    zones={"short":[("P75",-2.),("P90",-1.),("P95",0.)],"long":[]}
+    tape=[Tape(TEST_START+62000,4998.8,.01,"A","sweep-through")]
+    r,closed,terminal=run_scenario(x,p,tape,zones,.5,2.)
+    # One 0.01 oz *worse-price print* implies earlier better resting
+    # makers 1.5 oz had been executed IF the hypothetical orders were live.
+    # It is not treating 0.01 as available size for three distinct orders.
+    assert r["paxg_maker_orders_posted"]==3
+    assert r["maker_through_price_order_full_fills_assumed"]==3
+    assert r["maker_matched_public_volume_oz"]==1.5
+    assert r["xau_hedges_executed"]==3
+    assert r["tp_closed_positions"]==0
+    assert closed==[]
+    assert len(terminal)==3
+
+
+def test_through_trade_after_pending_spread_cancellation_cannot_fill():
+    t=TEST_START
+    x=[book(t,5000),book(t+60000,5000),book(t+120000,5000)]
+    p=[book(t+1000,5003),book(t+61000,4999),book(t+121000,5003)]
+    # Post at 61s and cancel on spread at 121s, then trade through at 122s.
+    trade=[Tape(t+122000,4998.0,5.,"A","too-late-sweep")]
+    r,closed,terminal=run_scenario(x,p,trade,ZONES,.5,2.)
+    assert r["paxg_maker_orders_posted"]==1
+    assert r["maker_orders_canceled_on_spread_reversion"]==1
+    assert r["maker_through_price_order_full_fills_assumed"]==0
+    assert r["xau_hedges_executed"]==0
+    assert closed==[] and terminal==[]
 
 
 def test_exact_price_print_diagnostic_matches_existing_queue_simulator():
