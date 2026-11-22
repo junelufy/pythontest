@@ -577,7 +577,8 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
 
 
 def write_csv(path,rows,default_fields):
-    cols=list(rows[0]) if rows else default_fields
+    # Heterogeneous diagnostic event rows need the UNION of all event fields.
+    cols=list(dict.fromkeys(key for row in rows for key in row)) if rows else default_fields
     with Path(path).open("w",newline="",encoding="utf8") as f:
         wr=csv.DictWriter(f,fieldnames=cols)
         wr.writeheader()
