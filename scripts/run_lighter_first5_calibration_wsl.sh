@@ -11,7 +11,7 @@ echo "Training 2026-10-23 01:00 UTC .. 2026-10-28 01:00 UTC, end exclusive"
 echo "Holdout starts 2026-10-28 01:00 UTC. Do not select grids using heldout results."
 python3 -m pytest -q tests/test_lighter_5d_calibration.py tests/test_lighter_spread_feasibility.py
 
-python3 scripts/calibrate_lighter_spread_5d.py \
+python3 -m scripts.calibrate_lighter_spread_5d \
   --input "$DATA" \
   --output "$OUT" \
   --start 2026-10-23T01:00:00Z \
