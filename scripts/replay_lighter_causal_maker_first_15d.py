@@ -222,7 +222,7 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
             if not group.orders:
                 del groups[key]
 
-    def cancel_pending_outside_zone(ref):
+    def cancel_pending_outside_zone(ref, now):
         """Use the SAME qty-aware maker-reference spread used for entry zones.
 
         SHORT: XAU executable SELL - current PAXG best BID < grid threshold.
@@ -296,7 +296,7 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
             # not just PAXG updates. Never use a stale PAXG book for this.
             if (active_p is not None and
                 0 <= t-active_p.ts <= MAX_PAXG_QUOTE_AGE_MS):
-                cancel_pending_outside_zone(current_reference((t,active_x,active_p),qty))
+                cancel_pending_outside_zone(current_reference((t,active_x,active_p),qty), t)
             # ONLY hedge AFTER the maker trade timestamp, from a later XAU L2.
             used={}
             for state in states.values():
@@ -397,7 +397,7 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
             continue
         ev=(t,active_x,active_p)
         ref=current_reference(ev,qty)
-        cancel_pending_outside_zone(ref)
+        cancel_pending_outside_zone(ref, t)
         closing_used={}
         # First close hedged positions. At most one close per grid, and no reentry
         # into an unchanged zone immediately following the TP.
