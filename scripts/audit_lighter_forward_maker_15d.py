@@ -57,6 +57,9 @@ def load_candidates(root):
             "direction":row["direction"],"grid":row["grid"],
             "quantity_oz":key[4],
             "paxg_limit_from_replay":float(row["entry_p"]) if row.get("entry_p") else None,
+            "replay_xau_entry_px":float(row["entry_x"]) if row.get("entry_x") else None,
+            "replay_xau_exit_px":float(row["exit_x"]) if row.get("exit_x") else None,
+            "replay_paxg_exit_px":float(row["exit_p"]) if row.get("exit_p") else None,
             "example_gross_usd_oz":float(row["gross_usd_oz"]) if row.get("gross_usd_oz") else None,
             "example_tp_gross":float(row["tp_gross_usd_oz"]) if row.get("tp_gross_usd_oz") else None,
         })
@@ -188,6 +191,15 @@ def quote_info(event, max_age_ms=120000):
     }
 
 
+def price_within_book_side(book, action, quoted, tolerance=0.011):
+    """Necessary L2 side-price condition; not proof of actual fill."""
+    if quoted is None:
+        return None
+    levels=book.ask if action=="buy" else book.bid
+    prices=[price for price,_ in levels]
+    return min(prices)-tolerance <= quoted <= max(prices)+tolerance
+
+
 def run(data, prior, output):
     from scripts.analyze_lighter_spread_feasibility import executable
     output=Path(output)
@@ -199,7 +211,10 @@ def run(data, prior, output):
     tt,prints,trade_stats,files,trade_examples,unparsed=load_paxg_trade_prints(Path(data)/"trades"/"PAXG")
     stats={"candidates":len(candidates),"paired_found":0,"entry_skew_gt10":0,
            "exit_skew_gt10":0,"eligible_prints_60s":0,"no_prints_60s":0,
-           "strict_simulation_candidates":0}
+           "strict_simulation_candidates":0,
+           "maker_price_mismatch":0,"xau_entry_outside_l2_side":0,
+           "xau_exit_outside_l2_side":0,"paxg_exit_outside_l2_side":0,
+           "reported_gross_arithmetic_mismatch":0}
     details=[]
     incident_records=[]
     for sample in candidates:
@@ -219,12 +234,18 @@ def run(data, prior, output):
             stats["eligible_prints_60s"]+=1
         if evidence["public_print_instant_fill_supported"].startswith("NO_PUBLIC"):
             stats["no_prints_60s"]+=1
+        xau_entry_action = "buy" if sample["direction"]=="long" else "sell"
+        check_entry_x=price_within_book_side(x,xau_entry_action,sample["replay_xau_entry_px"])
+        if check_entry_x is False:stats["xau_entry_outside_l2_side"]+=1
+        if evidence["maker_price_matches_replay"] is False:stats["maker_price_mismatch"]+=1
         row={
             "scenario":sample["scenario"],
             "entry_utc":iso(t),"direction":sample["direction"],
             "grid":sample["grid"],"quantity_oz":sample["quantity_oz"],
             "example_tp_gross":sample["example_tp_gross"],
             "example_gross_usd_oz":sample["example_gross_usd_oz"],
+            "replay_xau_entry_px":sample["replay_xau_entry_px"],
+            "xau_entry_within_source_l2_side":check_entry_x,
             **q,**evidence,
         }
         if sample["exit_ms"] is not None:
@@ -233,7 +254,29 @@ def run(data, prior, output):
             ep=asof(pt,pb,et,120000)
             if ex and ep:
                 end=quote_info((et,ex,ep))
+                exit_x_action="sell" if sample["direction"]=="long" else "buy"
+                exit_p_action="buy" if sample["direction"]=="long" else "sell"
+                x_ok=price_within_book_side(ex,exit_x_action,sample["replay_xau_exit_px"])
+                p_ok=price_within_book_side(ep,exit_p_action,sample["replay_paxg_exit_px"])
+                if x_ok is False:stats["xau_exit_outside_l2_side"]+=1
+                if p_ok is False:stats["paxg_exit_outside_l2_side"]+=1
+                e_x=sample["replay_xau_entry_px"]
+                e_p=sample["paxg_limit_from_replay"]
+                o_x=sample["replay_xau_exit_px"]
+                o_p=sample["replay_paxg_exit_px"]
+                declared=sample["example_gross_usd_oz"]
+                gross_check=None
+                if None not in (e_x,e_p,o_x,o_p,declared):
+                    calc=((o_x-e_x)+(e_p-o_p) if sample["direction"]=="long"
+                          else (e_x-o_x)+(o_p-e_p))
+                    gross_check=abs(calc-declared)<0.0001
+                    if not gross_check:stats["reported_gross_arithmetic_mismatch"]+=1
                 row.update({
+                    "replay_xau_exit_px":o_x,
+                    "replay_paxg_exit_px":o_p,
+                    "xau_exit_within_source_l2_side":x_ok,
+                    "paxg_exit_within_source_l2_side":p_ok,
+                    "reported_gross_arithmetic_consistent":gross_check,
                     "exit_utc":iso(et),
                     "exit_snapshot_skew_s":end["snapshot_skew_s"],
                     "exit_xau_book_utc":end["xau_book_utc"],
