@@ -7,6 +7,7 @@ the user chooses and freezes entry/exit thresholds.
 """
 import argparse
 import csv
+import gzip
 import hashlib
 import json
 import math
@@ -16,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.analyze_lighter_spread_feasibility import (
-    ms, iso, read_books, paired, executable, quantiles,
+    ms, iso, parse_book, paired, executable, quantiles,
 )
 
 UTC = timezone.utc
@@ -53,6 +54,44 @@ def histogram(values, width=1.0):
             for lower, count in sorted(counts.items())]
 
 
+def read_calibration_books(root, symbol, start_ms, cutoff_ms):
+    """Open only chunk files intersecting the first five days, NEVER holdout files."""
+    directory = root / "book" / symbol
+    if not directory.is_dir():
+        raise FileNotFoundError("Missing L2 directory " + str(directory))
+    books = {}
+    checked = 0
+    skipped_future = 0
+    for source in sorted(directory.glob("*.jsonl.gz")):
+        name = source.name.removesuffix(".jsonl.gz")
+        parts = name.split("_")
+        if len(parts) != 2 or not all(part.isdecimal() for part in parts):
+            raise ValueError("Unexpected L2 chunk filename (cannot enforce holdout): " + source.name)
+        chunk_start, chunk_end = (int(x) for x in parts)
+        if chunk_start >= cutoff_ms:
+            skipped_future += 1
+            continue
+        if chunk_end <= start_ms - 180000:
+            continue
+        checked += 1
+        with gzip.open(source, "rt", encoding="utf8") as inp:
+            for line in inp:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                stamp = ms(row["timestamp"])
+                if start_ms - 180000 <= stamp < cutoff_ms:
+                    book = parse_book(row)
+                    books[book.ts] = book
+    if not books:
+        raise ValueError("No L2 snapshots available during first five days for " + symbol)
+    result = [books[key] for key in sorted(books)]
+    print(f"{symbol}: calibration chunk files read={checked}; "
+          f"holdout chunk files never opened={skipped_future}; "
+          f"snapshots={len(result)}", flush=True)
+    return [b.ts for b in result], result
+
+
 def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec,
                      sampling_minutes):
     if days <= 0 or sampling_minutes <= 0 or max_quote_age_sec <= 0:
@@ -61,8 +100,8 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
         raise ValueError("Quantities must all be positive")
     cutoff_ms = start_ms + days * 86400_000
     out_of_sample_end_ms = cutoff_ms + DEFAULT_TEST_DAYS * 86400_000
-    xau = read_books(root, "XAU", start_ms, cutoff_ms - 1)
-    paxg = read_books(root, "PAXG", start_ms, cutoff_ms - 1)
+    xau = read_calibration_books(root, "XAU", start_ms, cutoff_ms)
+    paxg = read_calibration_books(root, "PAXG", start_ms, cutoff_ms)
     events = paired(xau, paxg, start_ms, cutoff_ms - 1,
                     sampling_minutes, max_quote_age_sec * 1000)
     output.mkdir(parents=True, exist_ok=True)
