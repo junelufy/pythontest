@@ -162,7 +162,22 @@ def group_key(side,price):
     return side,round(price,5)
 
 
-def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
+def maker_print_at_or_through(maker_action, maker_limit, taker_side, trade_price):
+    """Diagnostic of possible crossing, NOT evidence of allocated maker fill.
+
+    Our passive BUY requires aggressor SELL trade at/below buy limit.
+    Our passive SELL requires aggressor BUY trade at/above sell limit.
+    An exact price print is not mandatory when a market order sweeps a level.
+    """
+    if maker_action=="BUY":
+        return taker_side=="A" and trade_price<=maker_limit+PRICE_TOLERANCE
+    if maker_action=="SELL":
+        return taker_side=="B" and trade_price>=maker_limit-PRICE_TOLERANCE
+    raise ValueError("Invalid maker_action")
+
+
+def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
+                 event_log=None):
     """Chronological single-scenario replay; all six grids share the same book."""
     assert qty>0 and tp in (2.,3.)
     states={f"{side}_{label}":State(side,label,level)
@@ -170,6 +185,15 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
     groups={}
     counters=Counter()
     closed=[]
+    if event_log is not None:
+        event_log.clear()
+    def audit_event(event, now, state=None, **extra):
+        if event_log is None:return
+        base={"time_utc":iso(now),"type":event}
+        if state is not None:
+            base.update({"grid":state.label,"direction":state.direction,
+                         "grid_level":state.level})
+        event_log.append({**base,**extra})
     events=[]
     active_x=None
     active_p=None
@@ -212,6 +236,13 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
             if value is None or not price_is_outside(state.direction,value,state.level):
                 continue
             gridid=f"{state.direction}_{state.label}"
+            record=next((o for g in groups.values() for o in g.orders
+                         if o.grid_id==gridid),None)
+            audit_event("CANCEL_SPREAD",now,state,
+                        ref_spread_usd_oz=value,
+                        maker_limit=record.limit if record else None,
+                        maker_pending_seconds=(now-record.placed_ms)/1000
+                        if record else None)
             remove_from_group(gridid)
             state.status="flat"
             state.armed=False
@@ -294,6 +325,31 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
         if kind==2:
             trade=obj
             action="SELL" if trade.taker_side=="B" else "BUY"
+            # Audit every public print that AT OR THROUGH a still-pending
+            # hypothetical maker's limit. The current executable replay below
+            # remains strict exact-price only; this does NOT create fills.
+            eligible=[
+                g for g in groups.values()
+                if g.maker_action==action
+                and any(o.placed_ms<trade.ts for o in g.orders)
+                and maker_print_at_or_through(
+                    g.maker_action,g.limit,trade.taker_side,trade.price
+                )
+            ]
+            if eligible:
+                exact=[g for g in eligible if abs(g.limit-trade.price)<=PRICE_TOLERANCE]
+                counters["potential_at_or_through_public_prints"]+=1
+                counters["potential_at_or_through_trade_size_milli_oz"]+=round(trade.qty*1000)
+                if exact:counters["potential_exact_public_prints"]+=1
+                if len(eligible)>len(exact):
+                    counters["potential_price_through_public_prints"]+=1
+                audit_event("PUBLIC_PRINT_AT_OR_THROUGH",t,None,
+                            aggressor_side=trade.taker_side,
+                            public_price=trade.price,
+                            public_qty_oz=trade.qty,
+                            pending_price_levels=";".join(str(g.limit) for g in eligible),
+                            exact_price_levels=";".join(str(g.limit) for g in exact),
+                            note="Diagnostic only; queue execution not inferred")
             key=group_key(action,trade.price)
             grp=groups.get(key)
             if grp is None:continue
@@ -323,6 +379,10 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
                 state.status="hedge_wait"
                 state.armed=False
                 grp.orders.remove(o)
+                audit_event("EXACT_TRADE_PAPER_FILL",t,state,
+                            maker_limit=o.limit,maker_qty_oz=o.qty,
+                            paper_fill_qty_oz=filled,
+                            note="Hypothetical matched trade volume, not actual user fill")
                 counters["maker_print_matched_order_count"]+=1
                 counters["maker_print_matched_volume_milli_oz"]+=round(filled*1000)
             if not grp.orders:
@@ -409,6 +469,9 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
             state.status="pending"
             state.armed=False
             counters["maker_orders_posted"]+=1
+            audit_event("POST",t,state,ref_spread_usd_oz=value,
+                        maker_limit=limit,visible_queue_ahead_oz=visible,
+                        maker_order_qty_oz=qty)
         max_concurrent=max(max_concurrent,
                            sum(s.status in ("open","hedge_wait") for s in states.values()))
         mtm=mark_liquidation(active_x,active_p)
@@ -460,6 +523,15 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
         })
     terminal_total=sum(p["hypothetical_liquidation_net_usd"] for p in terminal)
     count_pending=sum(s.status=="pending" for s in states.values())
+    if event_log is not None:
+        for state in states.values():
+            if state.status!="pending":continue
+            outstanding=next((o for g in groups.values() for o in g.orders
+                              if o.grid_id==f"{state.direction}_{state.label}"),None)
+            audit_event("PENDING_AT_END",timeline[-1][0],state,
+                        maker_limit=outstanding.limit if outstanding else None,
+                        maker_pending_seconds=(timeline[-1][0]-outstanding.placed_ms)/1000
+                        if outstanding else None)
     count_unhedged=sum(s.status=="hedge_wait" for s in states.values())
     count_hedged=sum(s.status=="open" for s in states.values())
     result={
@@ -491,6 +563,14 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
         "maker_orders_canceled_on_spread_reversion":counters["unfilled_maker_canceled_spread_reversion"],
         "paxg_snapshot_no_fresh_xau":counters["paxg_books_without_recent_xau"],
         "maker_limit_exact_trade_prints":counters["prints_at_active_limit"],
+        "potential_public_prints_at_or_through_pending_limit":
+            counters["potential_at_or_through_public_prints"],
+        "potential_price_through_public_prints":
+            counters["potential_price_through_public_prints"],
+        "potential_exact_price_public_prints":
+            counters["potential_exact_public_prints"],
+        "potential_public_volume_at_or_through_oz":
+            round(counters["potential_at_or_through_trade_size_milli_oz"]/1000,6),
         "max_concurrent_nonflat_positions":max_concurrent,
     }
     return result,closed,terminal
@@ -518,13 +598,17 @@ def run(data,zones_path,output):
     rows=[]
     all_closed=[]
     all_terminal=[]
+    audit_log=[]
     for quantity in (0.5,1.0):
         zones=load_frozen_zones(zones_path,quantity)
         print("FROZEN_ZONES",quantity,zones,flush=True)
         for tp in (2.0,3.0):
             for fee_label,(m_bps,t_bps) in FEE_PROFILES.items():
+                diagnostics=(audit_log if quantity==0.5 and tp==2.0
+                             and fee_label=="standard" else None)
                 summary,closed,terminal=run_scenario(
-                    x_books,p_books,tape,zones,quantity,tp,m_bps,t_bps
+                    x_books,p_books,tape,zones,quantity,tp,m_bps,t_bps,
+                    event_log=diagnostics
                 )
                 summary["fee_profile"]=fee_label
                 rows.append(summary)
@@ -547,6 +631,8 @@ def run(data,zones_path,output):
                "entry_utc","hedge_utc","exit_utc","net_usd"])
     write_csv(out/"causal_terminal_positions.csv",all_terminal,
               ["fee_profile","qty_per_grid_oz","tp_gross_usd_per_oz","status","hypothetical_liquidation_net_usd"])
+    write_csv(out/"maker_order_evidence_diagnostic.csv",audit_log,
+              ["time_utc","type","direction","grid","grid_level","maker_limit","ref_spread_usd_oz"])
     report={
         "experiment":"HISTORICAL_REPLAY_AFTER_FORWARD_DATA_INSPECTED__NOT_FRESH_OOS",
         "frozen_calibration":"12d daily-quantile grid, no new optimization",
@@ -557,7 +643,8 @@ def run(data,zones_path,output):
             "max_xau_quote_age_on_entry_exit_seconds":MAX_XAU_QUOTE_AGE_MS/1000,
             "paxg_maker_limit":"current PAXG best bid for BUY; best ask for SELL",
             "pending_queue":"visible best-level quantity ahead + FIFO across our grids at same price",
-            "public_prints":"deduplicated by match trade_id; only crossed=true TAKER leg; require exact maker price and opposite aggressor action",
+            "public_prints":"deduplicated by match trade_id; only crossed=true TAKER leg; current executable replay still requires exact maker price and opposite aggressor action",
+            "diagnostic_only":"count opposite-aggressor public prints AT OR THROUGH standing maker limit; do not allocate any paper fills from price-through in this diagnostic revision",
             "partials":"first trade-allocated quantity cancels maker remainder, hedges allocated quantity only at next XAU L2 snapshot",
             "hedge":"next strictly later XAU snapshot after maker partial/full trade; reserve L2 20-level depth across grids",
             "exit":"gross executable TP 2/3 USD/oz; all TP exits use 2 taker legs",
@@ -570,6 +657,7 @@ def run(data,zones_path,output):
         "caveats":[
             "This is a DEVELOPER replay on the already-inspected 15-day set, NOT an untouched forward test.",
             "No actual maker order IDs, queue position, cancellations, hidden liquidity or network latency; tape-based fills still HYPOTHETICAL.",
+            "An exact trade price match is narrower than executable market sweep: diagnostic reports at-or-through events without altering fills or PnL. Investigate before selecting a different model.",
             "Conservative assumption: visible book quantity must trade through before our order, without estimating queue cancellation.",
             "Partial maker fill exposure modeled by exact matched volume; assumed immediate cancel remainder (cannot verify cancellation latency).",
             "XAU hedge only at a strictly later XAU L2 snapshot; no lookahead for maker-to-hedge pricing.",
