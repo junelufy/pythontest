@@ -59,3 +59,12 @@ The user wants to decide whether the PAXG maker-first / XAU short spread grid 25
 - Parameters: qty 0.1, 0.5, 1.0 oz; grid levels 25/27/29/31 USD/oz; exit compression targets 2/5 USD/oz or forced closes after 60/240 minutes; sensitivity 0/2 bps for each taker leg. Maker entry fee assumed 0 bps. Each configuration is independent and cannot be added into a single portfolio P/L.
 - Treat the time-based exit policy as **research assumption**, not settled user strategy. No real cash funding; no Maker queue position, intraminute sequencing, margin, adverse selection, simultaneous depth sharing. End-of-study open positions excluded; inspect unclosed_positions. This is a feasibility diagnostic only. Do not call reported net P/L realized/guaranteed or annualize.
 - Outputs `SPREAD_FEASIBILITY/spread_scenarios.csv` and `summary.json`, small review ZIP in user's Windows Downloads. Ask user for resulting ZIP before giving quantitative profitability conclusion.
+
+
+## Training/test time split requested by user (2026-11-22)
+User clarified grid $25/$27/$29/$31 were illustrative, not endorsed entry thresholds. Correct workflow:
+1. Read ONLY first five days from Lighter historical L2: **2026-10-23 01:00 to 2026-10-28 01:00 UTC exclusive**. Use `bash scripts/run_lighter_first5_calibration_wsl.sh` to produce signed maker/taker spread min/max, percentiles (P1-P99.9), day-by-day stats, distribution, sample CSV and offline Plotly HTML. The training reader only opens files intersecting training time. **Do not read test interval for selection.**
+2. Ask user to select entry zones using 5-day distribution (better: P75/P90/P95 and time-above; min/max alone can be one-off). Freeze threshold, qty, exit rules, fee assumptions and portfolio risk BEFORE 22-calendar-date holdout test. No out-of-sample test in this script.
+3. Reserved test **2026-10-28 01:00 UTC to 2026-11-19 00:00 UTC exclusive** (21d 23h, 22 calendar dates), respecting last finalized Lighter trades through Nov 18.
+4. Maker signal = XAU sell VWAP from L2 bid side minus PAXG best displayed bid where a maker buy might rest. This is *not a verified fill*, and no paired positions are created by calibration script.
+5. Prior study already exposed combined 27-day maximum to the analyst/user, so the holdout is not completely information-blind. Still prohibit any further test-interval optimization; ultimately validate on truly unseen forward data.
