@@ -6,6 +6,7 @@ from pathlib import Path
 from scripts.analyze_lighter_spread_feasibility import Book, iso, ms
 from scripts.audit_lighter_forward_maker_15d import (
     evidence_for, load_candidates, parse_trade, quote_info, run,
+    price_within_book_side,
 )
 from scripts.forwardtest_lighter_spread_grid_15d import TEST_START, TEST_END
 
@@ -100,3 +101,12 @@ def test_report_orders_fee_dedup_and_readonly_forensic_files(tmp_path):
     assert (tmp_path/"audit"/"maker_quote_forensic_summary.json").exists()
     assert (tmp_path/"audit"/"incident_20261114_2055_quotes.csv").exists()
     assert (tmp_path/"audit"/"all_maker_entry_evidence.csv").exists()
+
+
+def test_replay_price_book_side_range_validation():
+    b=Book(TEST_START,((4000.,0.5),(3999.,2.)),((4001.,0.5),(4002.,2.)))
+    assert price_within_book_side(b,"buy",4001.3) is True
+    assert price_within_book_side(b,"sell",3999.5) is True
+    assert price_within_book_side(b,"buy",4000.) is False
+    assert price_within_book_side(b,"sell",4002.) is False
+    assert price_within_book_side(b,"buy",None) is None
