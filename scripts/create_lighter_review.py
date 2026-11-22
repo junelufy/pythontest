@@ -27,11 +27,13 @@ def package(source, destination):
         candles=sample_csv(db,"select * from candles order by ts_ms desc,symbol limit 50")
         funding=sample_csv(db,"select * from funding order by ts_ms desc,symbol limit 20")
     book_sample=[]
-    for file in sorted((source/"book").glob("*/*.jsonl.gz"))[:4]:
-        with gzip.open(file,"rt",encoding="utf8") as data:
-            for i,line in enumerate(data):
-                if i>=3:break
-                book_sample.append(line.rstrip())
+    # A balanced sample from both assets is necessary for independent L2 checks.
+    for symbol in ("XAU","PAXG"):
+        for file in sorted((source/"book"/symbol).glob("*.jsonl.gz"))[:2]:
+            with gzip.open(file,"rt",encoding="utf8") as data:
+                for i,line in enumerate(data):
+                    if i>=3:break
+                    book_sample.append(line.rstrip())
     destination.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(destination,"w",zipfile.ZIP_DEFLATED) as z:
         z.writestr("data_coverage.json",json.dumps(report,indent=2))
