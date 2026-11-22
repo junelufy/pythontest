@@ -42,6 +42,9 @@ def read_quotes(filename: str, blob: bytes, symbol: str | None = None) -> pd.Dat
                 db.close()
     else:
         raise ValueError("Quote source must be CSV, Parquet, SQLite or ZIP")
+    return _normalize_quotes(df,symbol)
+
+def _normalize_quotes(df,symbol=None):
     df.columns = [str(c).strip().lower() for c in df.columns]
     rename = {
         "timestamp":"ts_ms", "time":"ts_ms", "datetime":"ts_ms",
@@ -88,3 +91,21 @@ def quote_at(df: pd.DataFrame | None, ts_ms: int, max_age_ms: int = 120000):
     row = df.iloc[ix]
     age = int(ts_ms - row.ts_ms)
     return row, age, age <= max_age_ms
+
+def read_quotes_from_path(path,symbol=None):
+    """Read only the chosen symbol from a large completed local SQLite DB."""
+    p=Path(path).expanduser().resolve()
+    if not p.is_file(): raise FileNotFoundError(str(p))
+    if p.suffix.lower() not in (".sqlite3",".sqlite",".db"):
+        if p.stat().st_size>300_000_000: raise ValueError("Quote source >300 MB")
+        return read_quotes(p.name,p.read_bytes(),symbol)
+    with sqlite3.connect(p.as_uri()+"?mode=ro",uri=True) as db:
+        tables={r[0] for r in db.execute("select name from sqlite_master where type='table'")}
+        table=next((t for t in ("quotes","book_top","top_of_book","orderbook_top") if t in tables),None)
+        if not table: raise ValueError("SQLite has no historical quotes")
+        cols={r[1] for r in db.execute(f"pragma table_info({table})")}
+        if symbol is not None and "symbol" in cols:
+            df=pd.read_sql_query(f"select * from {table} where symbol=? order by ts_ms",db,params=(symbol,))
+        else:
+            df=pd.read_sql_query(f"select * from {table} order by ts_ms",db)
+    return _normalize_quotes(df,symbol)
