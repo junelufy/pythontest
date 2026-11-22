@@ -176,6 +176,7 @@ def run_scenario(events,zones,qty,tp,mode,fee_name, maker_bps,taker_bps):
     max_concurrent=0
     max_closed_hold_minutes=0.0
     fees_paid=0.0
+    realized_running=0.0
     last_event=None
     for event in events:
         last_event=event
@@ -209,6 +210,7 @@ def run_scenario(events,zones,qty,tp,mode,fee_name, maker_bps,taker_bps):
                 "held_minutes":held,"status":"TP",
             })
             fees_paid+=exit_fee
+            realized_running+=net
             max_closed_hold_minutes=max(max_closed_hold_minutes,held)
             reserve(used,reservations)
             grid.position=None
@@ -264,7 +266,7 @@ def run_scenario(events,zones,qty,tp,mode,fee_name, maker_bps,taker_bps):
             exit_fee=commission_usd(x,p,qty,xrole,prole,maker_bps,taker_bps)
             marks+=qty*gross_oz(position,x,p)-position.entry_fee_usd-exit_fee
             marked_positions+=1
-        realized_total=sum(r["net_usd"] for r in realized)
+        realized_total=realized_running
         # Not all positions may be markable (depth); never claim fully marked.
         if marked_positions==sum(g.position is not None for g in grids):
             obs_equity=realized_total+marks
@@ -294,7 +296,7 @@ def run_scenario(events,zones,qty,tp,mode,fee_name, maker_bps,taker_bps):
             "mark_to_liquidation_net_usd":gross-pos.entry_fee_usd-fee,
             "held_minutes":(last_event[0]-pos.start_ms)/60000,
         })
-    rnet=sum(r["net_usd"] for r in realized)
+    rnet=realized_running
     unet=sum(r["mark_to_liquidation_net_usd"] for r in terminal_marks)
     result={
         "qty_oz_per_grid":qty,"tp_gross_usd_per_oz":tp,
