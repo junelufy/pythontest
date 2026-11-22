@@ -81,7 +81,30 @@ def test_three_grid_orders_share_public_print_volume_and_queue_ahead():
     assert r["maker_orders_with_any_public_trade_allocated"]==1
     assert r["maker_matched_public_volume_oz"]==.1
     assert abs(sum(t["qty_oz"] for t in closed) - .1) < 1e-9
+    # Final XAU bid=5000 and PAXG bid=5001.2 -> SHORT ref=-1.2.
+    # This is below levels P90=-1 and P95=0: both remaining makers
+    # MUST cancel under the user's spread-based pending cancellation rule.
+    assert r["terminal_pending_unfilled"]==0
+    assert r["maker_orders_canceled_on_spread_reversion"]==2
+
+
+def test_shared_queue_other_grids_remain_pending_if_short_spread_stays_in_zone():
+    # Same three maker orders and exactly one shared 0.6 oz trade:
+    # 0.5 oz queue ahead + 0.1 oz only for first grid. The final
+    # XAU 5000 - PAXG 4998 = +2, so the two other makers MUST remain
+    # pending; their unfilled quantities cannot be invented as fills.
+    x,p,_=fixture(final_paxg_bid=4998.)
+    zones={"short":[("P75",-2.),("P90",-1.),("P95",0.)],"long":[]}
+    tape=[Tape(TEST_START+62000,4999.0,.6,"A","one-taker-print")]
+    r,closed,terminal=run_scenario(x,p,tape,zones,.5,2.)
+    assert r["paxg_maker_orders_posted"]==3
+    assert r["maker_orders_with_any_public_trade_allocated"]==1
+    assert abs(r["maker_matched_public_volume_oz"]-.1)<1e-9
+    assert r["maker_orders_canceled_on_spread_reversion"]==0
     assert r["terminal_pending_unfilled"]==2
+    assert r["terminal_open_hedged_grids"]==1
+    assert closed==[]
+    assert len(terminal)==1
 
 
 def test_quote_age_filter_prevents_46_second_stale_xau_entries():
