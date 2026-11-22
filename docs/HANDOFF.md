@@ -68,3 +68,13 @@ User clarified grid $25/$27/$29/$31 were illustrative, not endorsed entry thresh
 3. Reserved test **2026-10-28 01:00 UTC to 2026-11-19 00:00 UTC exclusive** (21d 23h, 22 calendar dates), respecting last finalized Lighter trades through Nov 18.
 4. Maker signal = XAU sell VWAP from L2 bid side minus PAXG best displayed bid where a maker buy might rest. This is *not a verified fill*, and no paired positions are created by calibration script.
 5. Prior study already exposed combined 27-day maximum to the analyst/user, so the holdout is not completely information-blind. Still prohibit any further test-interval optimization; ultimately validate on truly unseen forward data.
+
+
+## OVERRIDES previous 5-day setup: user chose 12-day AVERAGED zones (2026-11-22)
+Latest decision supersedes 5-day train / ~22-day test proposal. Do not run an exploratory 22-day test or optimize against prior full-27-day scenarios.
+- Training/calibration: **2026-10-23 01:00 UTC inclusive to 2026-11-04 01:00 UTC exclusive**, precisely twelve contiguous 24h windows.
+- Holdout: **2026-11-04 01:00 UTC inclusive to 2026-11-19 00:00 UTC exclusive** (14d 23h, 15 calendar dates). Do not read holdout to calibrate zones.
+- Use `bash scripts/run_lighter_12d_calibration_wsl.sh` in WSL #2 after `git pull`. Output to Windows Downloads: `LIGHTER_SPREAD_CALIBRATION_12D.zip`; no 0xArchive calls.
+- Direction: **short spread on high upper-tail readings:** SELL XAU (VWAP bids) and BUY PAXG (maker at best BID assumed or taker asks). **Long spread on low lower-tail readings:** BUY XAU (VWAP asks) and SELL PAXG (maker at best ASK assumed or taker bids). Note PAXG maker LONG means maker SELL, not BUY.
+- User requested "12-day average zone": output the arithmetic mean of each day's 24-hour P75/P90/P95 upper (SHORT) and P5/P10/P25 lower (LONG), **daily equal weighting**, for each size and maker/taker cases. Also retain pooled minute quantiles and per-day trends; don't use overall spread mean as a zone. Review thresholds with user before freezing any backtest.
+- The 12-day driver reads raw L2 only through calibration cutoff; `summarize_lighter_12d_zones.py` uses only 12-day CSV and validates bounds. Run tests before analysis. No profits or actual maker fills can be inferred from calibration output alone.
