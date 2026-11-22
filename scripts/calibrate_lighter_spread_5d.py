@@ -55,7 +55,7 @@ def histogram(values, width=1.0):
 
 
 def read_calibration_books(root, symbol, start_ms, cutoff_ms):
-    """Open only chunk files intersecting the first five days, NEVER holdout files."""
+    """Open only calibration chunks; NEVER open held-out files."""
     directory = root / "book" / symbol
     if not directory.is_dir():
         raise FileNotFoundError("Missing L2 directory " + str(directory))
@@ -237,7 +237,7 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
             },
         }
 
-    sample_file = output / "calibration_5d_spread_samples.csv"
+    sample_file = output / f"calibration_{days}d_spread_samples.csv"
     with sample_file.open("w", newline="", encoding="utf8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -249,7 +249,7 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
         "reserved_out_of_sample_start_inclusive_utc": iso(cutoff_ms),
         "reserved_out_of_sample_end_exclusive_utc": iso(out_of_sample_end_ms),
         "calibration_days": days,
-        "reserved_test_calendar_dates": 22,
+        "reserved_test_calendar_dates": (datetime.fromtimestamp((out_of_sample_end_ms-1)/1000,UTC).date() - datetime.fromtimestamp(cutoff_ms/1000,UTC).date()).days + 1,
         "reserved_test_duration_hours": round((out_of_sample_end_ms - cutoff_ms) / 3600000, 3),
         "intended_full_period_hours": round((out_of_sample_end_ms - start_ms) / 3600000, 3),
         "expected_sample_ticks": expected_ticks,
@@ -262,7 +262,7 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
         "sample_sha256": sample_hash.hexdigest(),
         "by_order_quantity": per_quantity,
         "methodology": [
-            "This command reads raw L2 only up to the calibration cutoff; no 22-day test observations are accessed.",
+            "This command reads raw L2 only up to the calibration cutoff; no holdout observations are accessed.",
             "SHORT SPREAD entry when observed spread is abnormally HIGH: SELL XAU + BUY PAXG.",
             "Short maker signal = XAU executable sell VWAP minus PAXG best BID (hypothetical resting maker BUY).",
             "Short taker signal = XAU sell VWAP minus PAXG executable buy VWAP.",
@@ -278,10 +278,10 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
             "Calibrating thresholds and subsequently changing them on test data invalidates out-of-sample inference.",
         ],
     }
-    out = output / "calibration_5d_summary.json"
+    out = output / f"calibration_{days}d_summary.json"
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2))
-    print("FIRST 5 DAYS:", iso(start_ms), "through", iso(cutoff_ms), "exclusive")
-    print("RESERVED ~22 DAYS (22 calendar dates):", iso(cutoff_ms), "through", iso(out_of_sample_end_ms), "exclusive")
+    print(f"FIRST {days} DAYS:", iso(start_ms), "through", iso(cutoff_ms), "exclusive")
+    print("RESERVED HOLDOUT:", iso(cutoff_ms), "through", iso(out_of_sample_end_ms), "exclusive")
     print("PAIR COVERAGE:", len(events), "/", expected_ticks, f"({coverage}%)")
     for quantity in quantities:
         r = per_quantity[str(quantity)]
@@ -314,8 +314,8 @@ def main(argv=None):
     p.add_argument("--step-minutes", type=int, default=1)
     p.add_argument("--quantities", type=float, nargs="+", default=[0.1, 0.5, 1.0])
     a = p.parse_args(argv)
-    if a.calibration_days != DEFAULT_CALIBRATION_DAYS:
-        p.error("For this locked first-pass study, use exactly 5 calibration days")
+    if a.calibration_days not in (5,12):
+        p.error("Use 5 or 12 calibration days")
     if ms(a.start) != ms(DEFAULT_START):
         p.error("First-pass train/test split is locked to 2026-10-23T01:00:00Z")
     root = Path(a.input).expanduser().resolve()
