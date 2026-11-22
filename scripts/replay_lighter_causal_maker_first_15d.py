@@ -325,9 +325,11 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
         if kind==2:
             trade=obj
             action="SELL" if trade.taker_side=="B" else "BUY"
-            # Audit every public print that AT OR THROUGH a still-pending
-            # hypothetical maker's limit. The current executable replay below
-            # remains strict exact-price only; this does NOT create fills.
+            # Match standing maker price-time priority with public tape.
+            # Exact-limit prints consume visible queue and order size FIFO.
+            # A strictly WORSE price print on the aggressing side implies
+            # previously standing better-priced maker orders were swept.
+            # This is still a counterfactual paper fill, NEVER actual proof.
             eligible=[
                 g for g in groups.values()
                 if g.maker_action==action
@@ -349,7 +351,41 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
                             public_qty_oz=trade.qty,
                             pending_price_levels=";".join(str(g.limit) for g in eligible),
                             exact_price_levels=";".join(str(g.limit) for g in exact),
-                            note="Diagnostic only; queue execution not inferred")
+                            note="Eligible public tape, not actual user order execution")
+            # PRICE-THROUGH: a real trade at a worse level could not bypass
+            # better priced resting maker orders on the same matching book.
+            # Provided our hypothetical orders were acknowledged before this
+            # trade and still pending, assume full paper fill at their original
+            # limit, irrespective of volume of the *worse-price* print.
+            # Do not also use the same print for exact-price queued volume.
+            for through_grp in list(eligible):
+                through_key=group_key(through_grp.maker_action,through_grp.limit)
+                if through_key==group_key(action,trade.price):
+                    continue
+                for pending in list(through_grp.orders):
+                    if trade.ts<=pending.placed_ms:
+                        continue
+                    state=states[pending.grid_id]
+                    if state.status!="pending":
+                        raise AssertionError("Through-fill grid not pending")
+                    state.lot=Lot(
+                        pending.grid_id,pending.direction,pending.qty,
+                        pending.limit,trade.ts,pending.qty
+                    )
+                    state.status="hedge_wait"
+                    state.armed=False
+                    through_grp.orders.remove(pending)
+                    counters["maker_through_price_order_full_fills_assumed"]+=1
+                    counters["maker_print_matched_order_count"]+=1
+                    counters["maker_print_matched_volume_milli_oz"]+=round(pending.qty*1000)
+                    audit_event("THROUGH_TRADE_PAPER_FULL_FILL",t,state,
+                                maker_limit=pending.limit,
+                                maker_qty_oz=pending.qty,
+                                trade_price=trade.price,
+                                trade_qty_oz=trade.qty,
+                                note="Counterfactual priority-based fill; no actual order ID")
+                if not through_grp.orders:
+                    groups.pop(through_key,None)
             key=group_key(action,trade.price)
             grp=groups.get(key)
             if grp is None:continue
@@ -563,6 +599,8 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
         "maker_orders_canceled_on_spread_reversion":counters["unfilled_maker_canceled_spread_reversion"],
         "paxg_snapshot_no_fresh_xau":counters["paxg_books_without_recent_xau"],
         "maker_limit_exact_trade_prints":counters["prints_at_active_limit"],
+        "maker_through_price_order_full_fills_assumed":
+            counters["maker_through_price_order_full_fills_assumed"],
         "potential_public_prints_at_or_through_pending_limit":
             counters["potential_at_or_through_public_prints"],
         "potential_price_through_public_prints":
@@ -644,8 +682,11 @@ def run(data,zones_path,output):
             "max_xau_quote_age_on_entry_exit_seconds":MAX_XAU_QUOTE_AGE_MS/1000,
             "paxg_maker_limit":"current PAXG best bid for BUY; best ask for SELL",
             "pending_queue":"visible best-level quantity ahead + FIFO across our grids at same price",
-            "public_prints":"deduplicated by match trade_id; only crossed=true TAKER leg; current executable replay still requires exact maker price and opposite aggressor action",
-            "diagnostic_only":"count opposite-aggressor public prints AT OR THROUGH standing maker limit; do not allocate any paper fills from price-through in this diagnostic revision",
+            "public_prints":"deduplicated by match trade_id; only crossed=true TAKER leg; exact maker limit trades consume queue and order size, while trades strictly through limit imply earlier posted better-priced makers fully executed.",
+            "price_through_rule":"Counterfactual full-fill at original maker limit only if public aggressive trade occurred strictly beyond limit after order posting while order remains pending; assumes normal price-time-priority matching and successful acknowledgement; NOT actual verified fill.",
+            "exact_price_rule":"Public aggressive trade at maker limit consumes pre-existing visible queue ahead, then at most remaining trade quantity fills our makers FIFO.",
+            "order_cancellation":"ONLY frozen entry-spread exits zone, not order lifetime. Quote must be fresh.",
+            "same_timestamp_ambiguity":"PAXG L2 is processed before trade if timestamps tie, so cancel before fill when evidence ordering ambiguous.",
             "partials":"first trade-allocated quantity cancels maker remainder, hedges allocated quantity only at next XAU L2 snapshot",
             "hedge":"next strictly later XAU snapshot after maker partial/full trade; reserve L2 20-level depth across grids",
             "exit":"gross executable TP 2/3 USD/oz; all TP exits use 2 taker legs",
@@ -658,7 +699,8 @@ def run(data,zones_path,output):
         "caveats":[
             "This is a DEVELOPER replay on the already-inspected 15-day set, NOT an untouched forward test.",
             "No actual maker order IDs, queue position, cancellations, hidden liquidity or network latency; tape-based fills still HYPOTHETICAL.",
-            "An exact trade price match is narrower than executable market sweep: diagnostic reports at-or-through events without altering fills or PnL. Investigate before selecting a different model.",
+            "Price-through scenario is a counterfactual upper-bound conditional on actual maker-order presence and price-time priority. Does NOT verify fills or PnL.",
+            "One-minute L2 cannot verify maker limit remains live and acknowledged; price-through inference does not replace private order events.",
             "Conservative assumption: visible book quantity must trade through before our order, without estimating queue cancellation.",
             "Partial maker fill exposure modeled by exact matched volume; assumed immediate cancel remainder (cannot verify cancellation latency).",
             "XAU hedge only at a strictly later XAU L2 snapshot; no lookahead for maker-to-hedge pricing.",
