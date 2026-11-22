@@ -6,7 +6,7 @@ OUT="$DATA/SPREAD_SENSITIVITY_27D"
 WIN="/mnt/c/Users/June-ASUS/Downloads/LIGHTER_SPREAD_SENSITIVITY_27D.zip"
 
 echo "Running offline regression tests..."
-python3 -m pytest -q tests/test_lighter_spread_feasibility.py
+python3 -m pytest -q tests/test_lighter_spread_feasibility.py tests/test_lighter_spread_quantiles.py
 
 echo "Running NEW exploratory lower-threshold sensitivity study on existing 27-day L2 data. NO API calls."
 python3 scripts/analyze_lighter_spread_feasibility.py \
