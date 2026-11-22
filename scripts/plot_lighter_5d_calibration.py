@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot first 5-day XAU/PAXG L2 spread only; never plots holdout prices."""
+"""Plot calibration-only executable spread signals for BOTH long and short spread."""
 import argparse
 import csv
 import json
@@ -10,75 +10,86 @@ from plotly.subplots import make_subplots
 
 
 def create_chart(summary_path, samples_path, output_path):
-    report=json.loads(Path(summary_path).read_text(encoding="utf8"))
-    by_qty=report["by_order_quantity"]
-    qty_names=list(by_qty)
-    rows={name:[] for name in qty_names}
-    with Path(samples_path).open(newline="",encoding="utf8") as file:
-        for row in csv.DictReader(file):
-            q=str(float(row["qty_oz_each_leg"]))
-            if q in rows:
-                rows[q].append(row)
-    fig=make_subplots(
-        rows=2,cols=1,row_heights=[0.66,0.34],vertical_spacing=0.16,
-        subplot_titles=("Spread against UTC time — first 5 days ONLY",
-                        "Distribution of spreads, $/oz — 1-dollar bins"),
+    report = json.loads(Path(summary_path).read_text(encoding="utf8"))
+    by_qty = report["by_order_quantity"]
+    quantities = list(by_qty)
+    rows = {q: [] for q in quantities}
+    with Path(samples_path).open(newline="", encoding="utf8") as inp:
+        for row in csv.DictReader(inp):
+            key = str(float(row["qty_oz_each_leg"]))
+            if key in rows:
+                rows[key].append(row)
+    fig = make_subplots(
+        rows=2, cols=1, row_heights=[0.65,0.35], vertical_spacing=0.16,
+        subplot_titles=("Entry spreads by time — SHORT upper tail / LONG lower tail",
+                        "First-five-day distribution of executable spread ($/oz)"),
     )
-    q_titles={}
-    for i,key in enumerate(qty_names):
-        data=rows[key]
+    scenarios = [
+        ("short_maker", "SHORT spread / PAXG maker BUY", "maker_entry_signal_usd_oz"),
+        ("short_taker", "SHORT spread / both taker", "taker_entry_signal_usd_oz"),
+        ("long_maker", "LONG spread / PAXG maker SELL", "long_maker_entry_signal_usd_oz"),
+        ("long_taker", "LONG spread / both taker", "long_taker_entry_signal_usd_oz"),
+    ]
+    per_quantity_traces = 2 * len(scenarios)
+    titles = {}
+    for index, qty in enumerate(quantities):
+        data = rows[qty]
         if not data:
-            raise ValueError("No samples for qty "+key)
-        show=(i==0)
-        t=[r["utc"] for r in data]
-        maker=[float(r["maker_entry_signal_usd_oz"]) if r["maker_entry_signal_usd_oz"] else None for r in data]
-        taker=[float(r["taker_entry_signal_usd_oz"]) if r["taker_entry_signal_usd_oz"] else None for r in data]
-        fig.add_trace(go.Scattergl(x=t,y=maker,name=f"{key} oz: PAXG Maker (assumed)",
-                                   mode="lines",visible=show),row=1,col=1)
-        fig.add_trace(go.Scattergl(x=t,y=taker,name=f"{key} oz: Both Taker",
-                                   mode="lines",visible=show),row=1,col=1)
-        fig.add_trace(go.Histogram(x=[v for v in maker if v is not None],xbins={"size":1},
-                                   opacity=0.57,visible=show,name=f"{key} oz Maker distribution"),
-                      row=2,col=1)
-        fig.add_trace(go.Histogram(x=[v for v in taker if v is not None],xbins={"size":1},
-                                   opacity=0.57,visible=show,name=f"{key} oz Taker distribution"),
-                      row=2,col=1)
-        s=by_qty[key]["maker_signal_xau_sell_vwap_minus_paxg_best_bid"]
-        perc=s["percentiles"]
-        q_titles[key]=(f"XAU−PAXG spread calibration — {key} oz | Maker "
-                       f"min={s['min']}, max={s['max']}, "
-                       f"P50={perc.get('50')}, P75={perc.get('75')}, "
-                       f"P90={perc.get('90')}, P95={perc.get('95')} $/oz")
+            raise ValueError("No calibration observations for " + qty)
+        x = [item["utc"] for item in data]
+        values = {}
+        for key,label,column in scenarios:
+            vals = [float(v[column]) if v[column] not in (None,"") else None for v in data]
+            values[key] = vals
+            fig.add_trace(go.Scattergl(
+                x=x, y=vals, mode="lines", name=label,
+                visible=(index == 0), legendgroup=key), row=1, col=1)
+        for key,label,_ in scenarios:
+            fig.add_trace(go.Histogram(
+                x=[v for v in values[key] if v is not None],
+                xbins={"size": 1}, opacity=0.42,
+                name=label + " histogram",
+                showlegend=False, visible=(index == 0),
+                legendgroup=key), row=2, col=1)
+        s = by_qty[qty]
+        high = s["maker_signal_xau_sell_vwap_minus_paxg_best_bid"]["percentiles"]
+        low = s["long_maker_signal_xau_buy_vwap_minus_paxg_best_ask"]["percentiles"]
+        titles[qty] = (
+            f"Five-day XAU−PAXG zones · {qty} oz | SHORT upper P90={high.get('90')}, "
+            f"P95={high.get('95')} | LONG lower P5={low.get('5')}, "
+            f"P10={low.get('10')} $/oz"
+        )
+
     fig.update_layout(
-        title=q_titles[qty_names[0]],
+        title=titles[quantities[0]],
         barmode="overlay",
         height=850,
-        margin={"t":115,"b":65},
+        margin={"t":130,"b":65},
         hovermode="x unified",
         template="plotly_white",
         updatemenus=[{
-            "buttons":[{"label":key+" oz",
-                        "method":"update",
-                        "args":[{"visible":[trace//4==i for trace in range(len(fig.data))]},
-                                {"title":q_titles[key]}]}
-                       for i,key in enumerate(qty_names)],
-            "direction":"down","x":0.0,"y":1.09,"xanchor":"left","yanchor":"top",
-            "showactive":True
+            "buttons":[{"label":qty+" oz","method":"update",
+                        "args":[{"visible":[idx//per_quantity_traces==i
+                                            for idx in range(len(fig.data))]},
+                                {"title":titles[qty]}]}
+                       for i,qty in enumerate(quantities)],
+            "direction":"down","x":0.0,"y":1.12,"xanchor":"left","yanchor":"top",
+            "showactive":True,
         }],
-        annotations=list(fig.layout.annotations)+[
-            {"text":"Calibration only. Maker fill is hypothetical; fees and exits excluded.",
-             "showarrow":False,"xref":"paper","yref":"paper","x":1,"y":1.12,
-             "xanchor":"right","font":{"size":11}}
-        ],
+        annotations=list(fig.layout.annotations) + [{
+            "text":"CALIBRATION ONLY · Maker fills hypothetical · No fees, exits or held-out data",
+            "showarrow":False,"xref":"paper","yref":"paper","x":1,"y":1.15,
+            "xanchor":"right","font":{"size":11},
+        }],
     )
-    fig.update_xaxes(title_text="UTC",row=1,col=1)
+    fig.update_xaxes(title_text="Time (UTC)",row=1,col=1)
     fig.update_yaxes(title_text="Entry spread ($/oz)",row=1,col=1)
     fig.update_xaxes(title_text="Entry spread ($/oz)",row=2,col=1)
-    fig.update_yaxes(title_text="Minutes observed",row=2,col=1)
-    output_path=Path(output_path)
-    output_path.parent.mkdir(parents=True,exist_ok=True)
-    fig.write_html(str(output_path),include_plotlyjs=True,full_html=True,auto_open=False)
-    print("CALIBRATION_CHART:",output_path)
+    fig.update_yaxes(title_text="Sampled minutes",row=2,col=1)
+    destination=Path(output_path)
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    fig.write_html(str(destination), include_plotlyjs=True, full_html=True, auto_open=False)
+    print("TWO_SIDED_CALIBRATION_CHART",destination)
 
 
 if __name__=="__main__":
