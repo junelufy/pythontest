@@ -30,8 +30,9 @@ def audit(base,symbol):
     path=base/"lighter_marketdata.sqlite3"
     if not path.is_file():raise FileNotFoundError(path)
     with sqlite3.connect(path.as_uri()+"?mode=ro",uri=True) as db:
-        candle_minutes={int(r[0])//60000 for r in db.execute(
-            "select ts_ms from candles where symbol=?",(symbol,))}
+        candle_volumes={int(r[0])//60000:(float(r[1]) if r[1] is not None else None)
+                        for r in db.execute("select ts_ms,base_volume from candles where symbol=?",(symbol,))}
+        candle_minutes=set(candle_volumes)
         quote_minutes={int(r[0])//60000 for r in db.execute(
             "select ts_ms from quotes where symbol=?",(symbol,))}
     files=sorted((base/"trades"/symbol).glob("*.jsonl.gz"))
@@ -54,6 +55,16 @@ def audit(base,symbol):
     trade_minutes_in_window={t for t in trade_minutes if start<=t<=end}
     extra_trades=sorted(trade_minutes_in_window-candle_minutes)
     unsupported_candles=sorted(candle_minutes-trade_minutes_in_window)
+    zero_vol=[m for m in unsupported_candles if candle_volumes[m]==0]
+    positive_vol=[m for m in unsupported_candles if candle_volumes[m] is not None and candle_volumes[m]>0]
+    unknown_vol=[m for m in unsupported_candles if candle_volumes[m] is None]
+    negative_vol=[m for m in unsupported_candles if candle_volumes[m] is not None and candle_volumes[m]<0]
+    trade_with_zero_candle_vol=[m for m in (trade_minutes_in_window & candle_minutes)
+                                if candle_volumes[m]==0]
+    candle_without_trade_by_day=Counter(datetime.fromtimestamp(m*60,timezone.utc).date().isoformat()
+                                        for m in unsupported_candles)
+    positive_without_trade_by_day=Counter(datetime.fromtimestamp(m*60,timezone.utc).date().isoformat()
+                                        for m in positive_vol)
     report={
         "symbol":symbol,
         "trade_raw_records":raw,
@@ -64,10 +75,25 @@ def audit(base,symbol):
         "trade_minutes_inside_candle_quote_window":len(trade_minutes_in_window),
         "trade_minutes_missing_candle":len(extra_trades),
         "candles_without_matching_trade":len(unsupported_candles),
+        "candle_no_trade_zero_volume":len(zero_vol),
+        "candle_no_trade_positive_volume":len(positive_vol),
+        "candle_no_trade_missing_volume":len(unknown_vol),
+        "candle_no_trade_negative_volume":len(negative_vol),
+        "trade_present_but_candle_zero_volume":len(trade_with_zero_candle_vol),
+        "candle_no_trade_with_quote_same_minute":len(set(unsupported_candles)&quote_minutes),
+        "candle_no_trade_top_days":candle_without_trade_by_day.most_common(12),
+        "positive_volume_no_trade_top_days":positive_without_trade_by_day.most_common(12),
+        "positive_volume_no_trade_examples_utc":[
+            {"minute":datetime.fromtimestamp(m*60,timezone.utc).isoformat(),
+             "candle_base_volume":candle_volumes[m]}
+            for m in positive_vol[:25]],
+        "trade_present_but_candle_zero_volume_examples_utc":[
+            datetime.fromtimestamp(m*60,timezone.utc).isoformat()
+            for m in sorted(trade_with_zero_candle_vol)[:20]],
         "trade_minutes_missing_candle_examples_utc":[datetime.fromtimestamp(m*60,timezone.utc).isoformat() for m in extra_trades[:20]],
         "candle_without_trade_examples_utc":[datetime.fromtimestamp(m*60,timezone.utc).isoformat() for m in unsupported_candles[:20]],
         "window_utc":[datetime.fromtimestamp(m*60,timezone.utc).isoformat() for m in (start,end)],
-        "interpretation_note":"Zero raw trades in a minute suggests no transaction in this historical trade archive, but does not prove market data was never missing. Check ingestion completeness separately."
+        "interpretation_note":"A candle with zero volume and no matching raw trade is consistent with a no-trade candle, but does not prove complete capture. A positive-volume candle lacking raw trades requires investigation of archive coverage, timestamp mappings, and trade pagination. Market depth does not prove trades occurred."
     }
     destination=base/(symbol+"_CANDLE_TRADE_AUDIT.json")
     destination.write_text(json.dumps(report,indent=2))
