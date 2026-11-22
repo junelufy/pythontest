@@ -48,3 +48,14 @@ After user ran `scripts/diagnose_lighter_trade_finalization.py --symbols PAXG --
 - These 1,344 are **not proven no-trade**; canonical archive is not yet published through those times. Historical L2/candles can remain valid independently. Preserve original raw files and provenance.
 - API `/v1/lighter/trades/{symbol}/recent` gives newest preliminary feed rows, **not** a guaranteed paginated 3-day full historical tape. Do not merge into canonical trade archives or claim reconciliation. Native Lighter free S3 daily Parquet is an independent alternative for verifying complete historical trade days.
 - For any maker/taker fill inference, use canonical trades only through `finalized_through`; L2 minute snapshots cannot verify order queue position. When watermark advances, targeted finalized backfill should replace only previously empty/incomplete trade windows, preserving a provenance audit, never regenerate 30 days of unrelated data.
+
+
+## 27-day first-pass XAU/PAXG spread feasibility study (offline)
+The user wants to decide whether the PAXG maker-first / XAU short spread grid 25/27/29/31 may make money, without buying archived data beyond the existing 27 days.
+- Run `bash scripts/run_27d_feasibility_wsl.sh` in WSL #2 after `git pull`.
+- Reads actual local XAU/PAXG raw L2 20-level JSONL.gz, **no API credits**.
+- Test window 2026-10-23 01:00 through 2026-11-18 23:59 UTC; uses only as-of snapshots <=120 seconds old.
+- Separate take-both-legs baseline and **optimistic instant PAXG best-bid maker-fill assumption**, never label as verified fills.
+- Parameters: qty 0.1, 0.5, 1.0 oz; grid levels 25/27/29/31 USD/oz; exit compression targets 2/5 USD/oz or forced closes after 60/240 minutes; sensitivity 0/2 bps for each taker leg. Maker entry fee assumed 0 bps. Each configuration is independent and cannot be added into a single portfolio P/L.
+- Treat the time-based exit policy as **research assumption**, not settled user strategy. No real cash funding; no Maker queue position, intraminute sequencing, margin, adverse selection, simultaneous depth sharing. End-of-study open positions excluded; inspect unclosed_positions. This is a feasibility diagnostic only. Do not call reported net P/L realized/guaranteed or annualize.
+- Outputs `SPREAD_FEASIBILITY/spread_scenarios.csv` and `summary.json`, small review ZIP in user's Windows Downloads. Ask user for resulting ZIP before giving quantitative profitability conclusion.
