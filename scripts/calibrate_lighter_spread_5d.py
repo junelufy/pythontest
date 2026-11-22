@@ -23,7 +23,7 @@ from scripts.analyze_lighter_spread_feasibility import (
 UTC = timezone.utc
 DEFAULT_START = "2026-10-23T01:00:00Z"
 DEFAULT_CALIBRATION_DAYS = 5
-DEFAULT_TEST_DAYS = 22
+DEFAULT_TEST_END = "2026-11-19T00:00:00Z"  # last canonical minute: Nov 18 23:59 UTC
 
 
 def summary_stats(values):
@@ -99,7 +99,9 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
     if not quantities or min(quantities) <= 0:
         raise ValueError("Quantities must all be positive")
     cutoff_ms = start_ms + days * 86400_000
-    out_of_sample_end_ms = cutoff_ms + DEFAULT_TEST_DAYS * 86400_000
+    out_of_sample_end_ms = ms(DEFAULT_TEST_END)
+    if out_of_sample_end_ms <= cutoff_ms:
+        raise ValueError("Frozen testing period does not follow calibration")
     xau = read_calibration_books(root, "XAU", start_ms, cutoff_ms)
     paxg = read_calibration_books(root, "PAXG", start_ms, cutoff_ms)
     events = paired(xau, paxg, start_ms, cutoff_ms - 1,
@@ -205,8 +207,9 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
         "reserved_out_of_sample_start_inclusive_utc": iso(cutoff_ms),
         "reserved_out_of_sample_end_exclusive_utc": iso(out_of_sample_end_ms),
         "calibration_days": days,
-        "reserved_test_days": DEFAULT_TEST_DAYS,
-        "intended_full_period_days": days + DEFAULT_TEST_DAYS,
+        "reserved_test_calendar_dates": 22,
+        "reserved_test_duration_hours": round((out_of_sample_end_ms - cutoff_ms) / 3600000, 3),
+        "intended_full_period_hours": round((out_of_sample_end_ms - start_ms) / 3600000, 3),
         "expected_sample_ticks": expected_ticks,
         "paired_fresh_snapshot_ticks": len(events),
         "paired_tick_coverage_percent": coverage,
@@ -231,7 +234,7 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
     out = output / "calibration_5d_summary.json"
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print("FIRST 5 DAYS:", iso(start_ms), "through", iso(cutoff_ms), "exclusive")
-    print("RESERVED NEXT 22 DAYS:", iso(cutoff_ms), "through", iso(out_of_sample_end_ms), "exclusive")
+    print("RESERVED ~22 DAYS (22 calendar dates):", iso(cutoff_ms), "through", iso(out_of_sample_end_ms), "exclusive")
     print("PAIR COVERAGE:", len(events), "/", expected_ticks, f"({coverage}%)")
     for quantity in quantities:
         r = per_quantity[str(quantity)]
