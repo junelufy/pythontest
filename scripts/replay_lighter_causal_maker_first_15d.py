@@ -358,6 +358,8 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
             # trade and still pending, assume full paper fill at their original
             # limit, irrespective of volume of the *worse-price* print.
             # Do not also use the same print for exact-price queued volume.
+            if len(eligible)>len(exact):
+                counters["through_trade_print_volume_milli_oz"]+=round(trade.qty*1000)
             for through_grp in list(eligible):
                 through_key=group_key(through_grp.maker_action,through_grp.limit)
                 if through_key==group_key(action,trade.price):
@@ -575,7 +577,8 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
         "maker_bps":maker_bps,"taker_bps":taker_bps,
         "paxg_maker_orders_posted":counters["maker_orders_posted"],
         "maker_orders_with_any_public_trade_allocated":counters["maker_print_matched_order_count"],
-        "maker_matched_public_volume_oz":round(counters["maker_print_matched_volume_milli_oz"]/1000.,6),
+        "maker_assumed_fill_quantity_oz":round(counters["maker_print_matched_volume_milli_oz"]/1000.,6),
+        "through_trade_print_volume_oz":round(counters["through_trade_print_volume_milli_oz"]/1000.,6),
         "partial_maker_fills_hedged":counters["partially_filled_maker_positions"],
         "xau_hedges_executed":counters["xau_hedges_executed"],
         "tp_closed_positions":len(closed),
@@ -684,6 +687,7 @@ def run(data,zones_path,output):
             "pending_queue":"visible best-level quantity ahead + FIFO across our grids at same price",
             "public_prints":"deduplicated by match trade_id; only crossed=true TAKER leg; exact maker limit trades consume queue and order size, while trades strictly through limit imply earlier posted better-priced makers fully executed.",
             "price_through_rule":"Counterfactual full-fill at original maker limit only if public aggressive trade occurred strictly beyond limit after order posting while order remains pending; assumes normal price-time-priority matching and successful acknowledgement; NOT actual verified fill.",
+            "volume_reporting":"maker_assumed_fill_quantity_oz is paper maker size filled, not the tape volume at the worse price; through_trade_print_volume_oz is public tape size, not maker executed size.",
             "exact_price_rule":"Public aggressive trade at maker limit consumes pre-existing visible queue ahead, then at most remaining trade quantity fills our makers FIFO.",
             "order_cancellation":"ONLY frozen entry-spread exits zone, not order lifetime. Quote must be fresh.",
             "same_timestamp_ambiguity":"PAXG L2 is processed before trade if timestamps tie, so cancel before fill when evidence ordering ambiguous.",
