@@ -62,3 +62,32 @@ ts_ms,symbol,bid,ask,bid_size,ask_size
 - Quote import แบบนี้รองรับ **Best level เท่านั้น** ยังไม่ใช่ Depth หลายราคาและไม่ยืนยันการ Fill ของ Maker
 
 หลังแก้ไขโค้ดบน GitHub ให้หยุด Streamlit (Ctrl+C) จาก WSL อันที่ 2 แล้วรัน `git pull` จาก `~/code/trading-backtest` และเริ่ม Streamlit ใหม่
+
+## โหลดชุดใหม่ Lighter XAU/PAXG ที่ดาวน์โหลดจาก 0xArchive (22 พ.ย. 2026)
+
+หลังดาวน์โหลดเสร็จ ใช้ไฟล์ SQLite เต็มใน WSL โดยตรง **ไม่ต้องอัปโหลดไฟล์ ZIP review** และไม่ต้องคัดลอกข้อมูลทั้งหมดลง Windows
+
+```bash
+cd ~/code/trading-backtest
+source .venv/bin/activate
+git pull origin master
+python -m pytest -q tests/test_lighter_local_paths.py tests/test_quotes.py
+python -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true
+```
+
+เปิด http://127.0.0.1:8501 ด้วยเบราว์เซอร์เอง
+
+1. Sidebar > **Or local file path (read-only)** ใส่ `/home/june-asus/code/trading-backtest/data/lighter_fresh_20261122/lighter_marketdata.sqlite3`
+2. Source symbol = XAU; Alias = XAU; กด Load asset
+3. Source symbol = PAXG; Alias = PAXG; กด Load asset
+4. Historical Bid/Ask > **Or local historical quotes file path** ให้ใส่พาธ SQLite เดียวกัน; เลือก asset XAU และ Source symbol XAU แล้วกด Load historical Bid/Ask
+5. เลือก asset PAXG และ Source symbol PAXG; กด Load historical Bid/Ask อีกครั้ง
+6. เลื่อนเวลา Replay เพื่อดู Bid, Ask และ top-level volumes ในตาราง หาก quote เก่าเกินกว่าค่า Maximum quote age จะไม่ถือว่าสด
+
+**ข้อจำกัดสำคัญ:** แอป MVP ปัจจุบันแสดง/ใช้เฉพาะ Best Bid/Ask พร้อม Size ชั้นแรกเท่านั้น แม้ไฟล์ดิบจาก 0xArchive จะบันทึก L2 20 ระดับต่อฝั่งก็ตาม การคำนวณ executable VWAP, การจำลองการใช้ Depth ร่วมกันหลายออร์เดอร์ และ Maker queue/fill ต้องพัฒนาเพิ่มก่อนใช้งาน Backtest แบบอัตโนมัติจริงจัง
+
+PAXG 1m candles อาจเป็น sparse candles (บางนาทีไม่มี trade) จึงต้องแยก `NO_TRADE` จาก `NO_DATA` และห้ามเติม OHLC เทียมแล้วอ้างว่าเป็นการซื้อขายจริง
+
+อัตรา funding ในไฟล์ฐานข้อมูลบันทึกถี่ประมาณ 10 วินาที เป็น rate observations ไม่ใช่ cash settlement records จึง **ห้าม** รวมจำนวนรายการเป็นจำนวนครั้งที่จ่าย/รับ Funding
+
+รายงาน `lighter_fresh_review_20261122.zip` มีเพียงตัวอย่างข้อมูลและสถิติ ไม่ใช่ฐานข้อมูลเต็ม
