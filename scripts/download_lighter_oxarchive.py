@@ -9,6 +9,7 @@ import csv
 import gzip
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -21,6 +22,13 @@ from urllib.request import Request, urlopen
 API = "https://api.0xarchive.io"
 KINDS = ("book", "candles", "funding", "trades")
 UTC = timezone.utc
+
+class HistoryWindowExceeded(RuntimeError):
+    """The free rolling retention boundary is newer than the requested start."""
+    def __init__(self, earliest_ms, detail):
+        self.earliest_ms=earliest_ms
+        super().__init__(detail)
+
 
 def timestamp(value):
     if isinstance(value, (int, float)):
@@ -46,7 +54,17 @@ def get(path, params, key):
                 raise ValueError("Unexpected API data shape (only snapshot mode supported)")
             return obj
         except HTTPError as e:
-            message = e.read(500).decode("utf-8", "replace")
+            message = e.read(4096).decode("utf-8", "replace")
+            if e.code == 403:
+                try:
+                    payload=json.loads(message)
+                except (ValueError,TypeError):
+                    payload={}
+                if payload.get("error_code")=="history_window_exceeded":
+                    match=re.search(r"earliest allowed timestamp\s+([0-9TZ:.+\-]+)",payload.get("error",""))
+                    if not match:
+                        raise RuntimeError("History boundary error without a parsable timestamp: "+message) from None
+                    raise HistoryWindowExceeded(timestamp(match.group(1)),message) from None
             if e.code not in (429,500,502,503,504) or attempt == 4:
                 raise RuntimeError(f"HTTP {e.code} for {path}: {message}") from None
             time.sleep(min(15,2**attempt))
@@ -120,6 +138,7 @@ def init(db):
     db.execute("create table if not exists quotes(symbol text,ts_ms integer,bid real,ask real,bid_size real,ask_size real,primary key(symbol,ts_ms))")
     db.execute("create table if not exists funding(symbol text,ts_ms integer,rate text,raw_json text,primary key(symbol,ts_ms))")
     db.execute("create table if not exists chunks(symbol text,kind text,begin_ms integer,end_ms integer,rows_count integer,primary key(symbol,kind,begin_ms,end_ms))")
+    db.execute("create table if not exists history_gaps(symbol text,kind text,requested_start_ms integer,actual_start_ms integer,end_ms integer,reason text,primary key(symbol,kind,requested_start_ms,end_ms))")
     db.commit()
 
 def collect(db,base,kind,symbol,start,end,key,granularity,depth):
@@ -132,16 +151,36 @@ def collect(db,base,kind,symbol,start,end,key,granularity,depth):
     if done and not final.is_file():
         # Recover a previous crash between database commit and writing the raw file.
         db.execute("delete from chunks where symbol=? and kind=? and begin_ms=? and end_ms=?",(symbol,kind,start,end))
+        db.execute("delete from history_gaps where symbol=? and kind=? and requested_start_ms=? and end_ms=?",(symbol,kind,start,end))
         db.commit()
     tmp=folder/f"{start}_{end}.partial"
     rows=[];count=0
+    effective_start=start
     try:
-        with gzip.open(tmp,"wt",encoding="utf-8") as out:
-            for batch in fetch_pages(kind,symbol,start,end,key,granularity,depth):
-                count+=len(batch)
-                for item in batch:
-                    out.write(json.dumps(item,separators=(",",":"),ensure_ascii=False)+"\n")
-                    if kind in ("book","candles","funding"):rows.append(item)
+        # The free 30-day retention boundary moves forward while the download runs.
+        # Adapt each affected chunk to the API's precise cutoff, preserving prior chunks.
+        for boundary_retry in range(6):
+            rows=[];count=0
+            try:
+                with gzip.open(tmp,"wt",encoding="utf-8") as out:
+                    for batch in fetch_pages(kind,symbol,effective_start,end,key,granularity,depth):
+                        count+=len(batch)
+                        for item in batch:
+                            out.write(json.dumps(item,separators=(",",":"),ensure_ascii=False)+"\n")
+                            if kind in ("book","candles","funding"):rows.append(item)
+                break
+            except HistoryWindowExceeded as exc:
+                new_start=max(effective_start+1000,exc.earliest_ms+90000)
+                if new_start>=end:
+                    effective_start=end
+                    with gzip.open(tmp,"wt",encoding="utf-8"):
+                        pass
+                    print(f"{symbol} {kind}: HISTORY SKIP {start}..{end} (older than free retention)",flush=True)
+                    break
+                effective_start=new_start
+                print(f"{symbol} {kind}: HISTORY CLIPPED to {datetime.fromtimestamp(effective_start/1000, UTC).isoformat()}; earlier records unavailable on Free",flush=True)
+        else:
+            raise RuntimeError(f"{symbol} {kind}: moving history boundary exceeded retry budget")
         # Ensure durable source bytes exist before marking the database chunk complete.
         # If the SQLite transaction fails, the next run safely fetches again.
         tmp.replace(final)
@@ -156,6 +195,9 @@ def collect(db,base,kind,symbol,start,end,key,granularity,depth):
                     rate=item.get("funding_rate",item.get("rate"))
                     db.execute("insert or replace into funding values(?,?,?,?)",(symbol,row_time(item),str(rate) if rate is not None else None,json.dumps(item)))
             db.execute("insert into chunks values(?,?,?,?,?)",(symbol,kind,start,end,count))
+            if effective_start>start:
+                db.execute("insert or replace into history_gaps values(?,?,?,?,?,?)",
+                           (symbol,kind,start,effective_start,end,"free_plan_rolling_retention"))
         print(f"{symbol} {kind}: DONE {count:,} records",flush=True)
     finally:
         if tmp.exists():tmp.unlink()
@@ -212,7 +254,9 @@ def main():
         summary={}
         for table in ("quotes","candles","funding"):
             summary[table]={s:db.execute(f"select count(*) from {table} where symbol=?",(s,)).fetchone()[0] for s in a.symbols}
-        (base/"QUALITY_REPORT.json").write_text(json.dumps({"requested_utc":[begin.isoformat(),end.isoformat()],"counts":summary},indent=2))
+        gaps=[dict(zip(("symbol","kind","requested_start_ms","actual_start_ms","end_ms","reason"),r))
+              for r in db.execute("select symbol,kind,requested_start_ms,actual_start_ms,end_ms,reason from history_gaps order by requested_start_ms")]
+        (base/"QUALITY_REPORT.json").write_text(json.dumps({"requested_utc":[begin.isoformat(),end.isoformat()],"counts":summary,"history_gaps":gaps},indent=2))
         print("COMPLETE",base.resolve(),json.dumps(summary),flush=True)
     finally:db.close()
 
