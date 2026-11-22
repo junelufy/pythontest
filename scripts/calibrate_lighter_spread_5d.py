@@ -118,8 +118,10 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
     per_quantity = {}
     sample_hash = hashlib.sha256()
     for quantity in quantities:
-        values = {"maker": [], "taker": [], "last_mid": [], "close_spread": []}
-        per_day = defaultdict(lambda: {"maker": [], "taker": []})
+        values = {"maker": [], "taker": [], "long_maker": [], "long_taker": [],
+                  "last_mid": [], "close_spread": []}
+        per_day = defaultdict(lambda: {"maker": [], "taker": [],
+                                      "long_maker": [], "long_taker": []})
         for event in events:
             tick, xb, pb = event
             item = executable(event, quantity)
@@ -127,6 +129,15 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
             maker_spread = item["maker_signal"]
             taker_spread = item["taker_signal"]
             close_spread = item["exit_spread"]
+            # Long spread: BUY XAU aggressively (at Ask depth) + SELL PAXG
+            # passively (offer at best Ask), or SELL PAXG aggressively (Bid depth).
+            # For long entries, LOWER spread is more favorable. Neither maker
+            # order is guaranteed to execute when resting at best price.
+            long_maker = (item["x_buy"] - pb.ask[0][0]
+                          if item["x_buy"] is not None else None)
+            long_taker = (item["x_buy"] - item["p_sell"]
+                          if item["x_buy"] is not None and item["p_sell"] is not None
+                          else None)
             sample = {
                 "utc": iso(tick),
                 "ts_ms": tick,
@@ -138,6 +149,7 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
                 "snapshot_skew_s": round(abs(xb.ts - pb.ts) / 1000, 3),
                 "xau_best_bid": xb.bid[0][0],
                 "paxg_best_bid": pb.bid[0][0],
+                "paxg_best_ask": pb.ask[0][0],
                 "xau_sell_vwap": item["x_sell"],
                 "paxg_buy_taker_vwap": item["p_buy"],
                 "xau_buy_vwap_for_close": item["x_buy"],
@@ -145,6 +157,8 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
                 "raw_best_bid_spread_usd_oz": round(raw_best_bid_spread, 6),
                 "maker_entry_signal_usd_oz": round(maker_spread, 6) if maker_spread is not None else None,
                 "taker_entry_signal_usd_oz": round(taker_spread, 6) if taker_spread is not None else None,
+                "long_maker_entry_signal_usd_oz": round(long_maker, 6) if long_maker is not None else None,
+                "long_taker_entry_signal_usd_oz": round(long_taker, 6) if long_taker is not None else None,
                 "taker_close_spread_usd_oz": round(close_spread, 6) if close_spread is not None else None,
             }
             rows.append(sample)
@@ -157,10 +171,18 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
             if taker_spread is not None:
                 values["taker"].append(taker_spread)
                 per_day[day]["taker"].append(taker_spread)
+            if long_maker is not None:
+                values["long_maker"].append(long_maker)
+                per_day[day]["long_maker"].append(long_maker)
+            if long_taker is not None:
+                values["long_taker"].append(long_taker)
+                per_day[day]["long_taker"].append(long_taker)
             if close_spread is not None:
                 values["close_spread"].append(close_spread)
         maker_stats = summary_stats(values["maker"])
         taker_stats = summary_stats(values["taker"])
+        long_maker_stats = summary_stats(values["long_maker"])
+        long_taker_stats = summary_stats(values["long_taker"])
         percentile_guide = {}
         for key in ("50", "75", "90", "95", "99"):
             candidate = maker_stats["percentiles"].get(key)
@@ -171,27 +193,47 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
                 "historical_minutes_at_or_above": sum(x >= candidate for x in values["maker"]),
                 "label": "calibration candidate only; not a validated entry grid",
             }
+        long_entry_zone_candidates = {}
+        for key in ("1", "5", "10", "25"):
+            candidate = long_maker_stats["percentiles"].get(key)
+            if candidate is None:
+                continue
+            long_entry_zone_candidates[key] = {
+                "level_usd_per_oz": candidate,
+                "historical_minutes_at_or_below": sum(x <= candidate for x in values["long_maker"]),
+                "label": "LOW tail: calibration candidate only; not a verified long-spread grid",
+            }
         per_quantity[str(quantity)] = {
             "qty_oz_each_leg": quantity,
             "paired_ticks": len(events),
             "maker_signal_ticks_with_enough_l2": len(values["maker"]),
             "taker_signal_ticks_with_enough_l2": len(values["taker"]),
+            "long_maker_signal_ticks_with_enough_l2": len(values["long_maker"]),
+            "long_taker_signal_ticks_with_enough_l2": len(values["long_taker"]),
             "close_spread_ticks_with_enough_l2": len(values["close_spread"]),
             "maker_signal_xau_sell_vwap_minus_paxg_best_bid": maker_stats,
             "taker_signal_xau_sell_vwap_minus_paxg_buy_vwap": taker_stats,
+            "long_maker_signal_xau_buy_vwap_minus_paxg_best_ask": long_maker_stats,
+            "long_taker_signal_xau_buy_vwap_minus_paxg_sell_vwap": long_taker_stats,
             "raw_best_bid_spread": summary_stats(values["last_mid"]),
             "taker_close_spread_xau_buy_vwap_minus_paxg_sell_vwap": summary_stats(values["close_spread"]),
             "maker_quantile_entry_zone_candidates": percentile_guide,
+            "short_spread_upper_tail_entry_candidates": percentile_guide,
+            "long_spread_lower_tail_entry_candidates": long_entry_zone_candidates,
             "daily": {
                 date: {
                     "maker_signal": summary_stats(day_values["maker"]),
                     "taker_signal": summary_stats(day_values["taker"]),
+                    "long_maker_signal": summary_stats(day_values["long_maker"]),
+                    "long_taker_signal": summary_stats(day_values["long_taker"]),
                 }
                 for date, day_values in sorted(per_day.items())
             },
             "histogram": {
                 "maker_signal": histogram(values["maker"]),
                 "taker_signal": histogram(values["taker"]),
+                "long_maker_signal": histogram(values["long_maker"]),
+                "long_taker_signal": histogram(values["long_taker"]),
             },
         }
 
@@ -221,8 +263,13 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
         "by_order_quantity": per_quantity,
         "methodology": [
             "This command reads raw L2 only up to the calibration cutoff; no 22-day test observations are accessed.",
-            "Maker entry signal = XAU executable sell VWAP minus PAXG current best BID (hypothetical resting maker buy).",
-            "Taker entry signal = XAU sell VWAP minus PAXG executable buy VWAP.",
+            "SHORT SPREAD entry when observed spread is abnormally HIGH: SELL XAU + BUY PAXG.",
+            "Short maker signal = XAU executable sell VWAP minus PAXG best BID (hypothetical resting maker BUY).",
+            "Short taker signal = XAU sell VWAP minus PAXG executable buy VWAP.",
+            "LONG SPREAD entry when observed spread is abnormally LOW: BUY XAU + SELL PAXG.",
+            "Long maker signal = XAU executable buy VWAP minus PAXG best ASK (hypothetical resting maker SELL).",
+            "Long taker signal = XAU buy VWAP minus PAXG executable sell VWAP.",
+            "Use upper-tail percentiles for SHORT and lower-tail percentiles for LONG, not the zero line.",
             "Signed spread in USD per ounce; do not replace negatives with zero.",
             "Each tick uses the latest snapshot not later than the tick, with the recorded max quote age.",
             "The signal is NOT net entry/exit profit; fee/funding and adverse selection are excluded.",
@@ -240,11 +287,18 @@ def make_calibration(root, output, start_ms, days, quantities, max_quote_age_sec
         r = per_quantity[str(quantity)]
         maker = r["maker_signal_xau_sell_vwap_minus_paxg_best_bid"]
         taker = r["taker_signal_xau_sell_vwap_minus_paxg_buy_vwap"]
-        print(f"QTY {quantity} oz: Maker-signal range {maker['min']}..{maker['max']}, "
+        longmaker = r["long_maker_signal_xau_buy_vwap_minus_paxg_best_ask"]
+        longtaker = r["long_taker_signal_xau_buy_vwap_minus_paxg_sell_vwap"]
+        print(f"QTY {quantity} oz: Short Maker-signal range {maker['min']}..{maker['max']}, "
               f"P50={maker['percentiles'].get('50')}, P75={maker['percentiles'].get('75')}, "
               f"P90={maker['percentiles'].get('90')}, P95={maker['percentiles'].get('95')}")
-        print(f"QTY {quantity} oz: Taker-signal range {taker['min']}..{taker['max']}, "
+        print(f"QTY {quantity} oz: Short Taker-signal range {taker['min']}..{taker['max']}, "
               f"P50={taker['percentiles'].get('50')}, P90={taker['percentiles'].get('90')}")
+        print(f"QTY {quantity} oz: Long Maker-signal range {longmaker['min']}..{longmaker['max']}, "
+              f"P5={longmaker['percentiles'].get('5')}, P10={longmaker['percentiles'].get('10')}, "
+              f"P25={longmaker['percentiles'].get('25')}")
+        print(f"QTY {quantity} oz: Long Taker-signal range {longtaker['min']}..{longtaker['max']}, "
+              f"P5={longtaker['percentiles'].get('5')}, P10={longtaker['percentiles'].get('10')}")
     print("SUMMARY:", out)
     print("SAMPLES:", sample_file)
     return report
