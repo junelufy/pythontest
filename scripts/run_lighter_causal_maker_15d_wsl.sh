@@ -30,7 +30,8 @@ python3 -m zipfile -c "$DEST" \
   "$OUT/causal_maker_first_summary.json" \
   "$OUT/causal_tp2_tp3_scenarios.csv" \
   "$OUT/causal_closed_trades.csv" \
-  "$OUT/causal_terminal_positions.csv"
+  "$OUT/causal_terminal_positions.csv" \
+  "$OUT/maker_order_evidence_diagnostic.csv"
 
 echo "Upload this ZIP:"
 echo 'C:\Users\June-ASUS\Downloads\LIGHTER_CAUSAL_MAKER_TP2_TP3_15D.zip'
