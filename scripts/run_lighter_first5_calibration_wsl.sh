@@ -3,10 +3,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DATA="data/lighter_fresh_20261122"
-OUT="$DATA/CALIBRATION_5D"
-DEST="/mnt/c/Users/June-ASUS/Downloads/LIGHTER_SPREAD_CALIBRATION_FIRST_5_DAYS.zip"
+OUT="$DATA/CALIBRATION_5D_TWO_SIDED"
+DEST="/mnt/c/Users/June-ASUS/Downloads/LIGHTER_SPREAD_CALIBRATION_TWO_SIDED_5D.zip"
 
-echo "=== First 5 days: calibration spread and distribution (NOT trade simulation) ==="
+echo "=== First 5 days: BOTH LONG (low spread) and SHORT (high spread) calibration; NO trade simulation ==="
 echo "Training 2026-10-23 01:00 UTC .. 2026-10-28 01:00 UTC, end exclusive"
 echo "Holdout starts 2026-10-28 01:00 UTC. Do not select grids using heldout results."
 python3 -m pytest -q tests/test_lighter_5d_calibration.py tests/test_lighter_spread_feasibility.py
