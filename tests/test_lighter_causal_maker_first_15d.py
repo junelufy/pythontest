@@ -201,3 +201,53 @@ def test_pending_maker_remains_after_more_than_five_minutes_if_spread_in_zone():
     assert r["terminal_pending_unfilled"]==1
     assert r["tp_closed_positions"]==0
     assert closed==[] and terminal==[]
+
+
+
+def test_price_through_trade_is_diagnostic_only_not_an_invented_fill():
+    x,p,_=fixture(final_paxg_bid=4998.0)
+    events=[]
+    # Aggressor SELL print below resting BUY limit 4999 implies possible
+    # swept bid, but source L2 cannot validate queue allocation.
+    tape=[Tape(TEST_START+62000,4998.8,.6,"A","through-one-print")]
+    result,closed,terminal=run_scenario(
+        x,p,tape,ZONES,.5,2.,event_log=events
+    )
+    assert result["paxg_maker_orders_posted"]==1
+    assert result["potential_public_prints_at_or_through_pending_limit"]==1
+    assert result["potential_price_through_public_prints"]==1
+    assert result["potential_exact_price_public_prints"]==0
+    assert result["maker_orders_with_any_public_trade_allocated"]==0
+    assert result["tp_closed_positions"]==0
+    assert not closed and not terminal
+    assert [e["type"] for e in events].count("POST")==1
+    assert [e["type"] for e in events].count("PUBLIC_PRINT_AT_OR_THROUGH")==1
+
+
+def test_exact_price_print_diagnostic_matches_existing_queue_simulator():
+    x,p,trades=fixture()
+    events=[]
+    result,closed,_=run_scenario(
+        x,p,trades,ZONES,.5,2.,event_log=events
+    )
+    assert result["potential_public_prints_at_or_through_pending_limit"]==1
+    assert result["potential_exact_price_public_prints"]==1
+    assert result["potential_price_through_public_prints"]==0
+    assert result["maker_orders_with_any_public_trade_allocated"]==1
+    assert [e["type"] for e in events].count("EXACT_TRADE_PAPER_FILL")==1
+
+
+def test_pending_cancel_audit_log_exposes_zone_trigger_and_elapsed():
+    t=TEST_START
+    x=[book(t,5000),book(t+60000,5000),book(t+120000,5000)]
+    p=[book(t+1000,5003),book(t+61000,4999),book(t+121000,5003)]
+    events=[]
+    result,closed,terminal=run_scenario(
+        x,p,[],ZONES,.5,2.,event_log=events
+    )
+    cancels=[e for e in events if e["type"]=="CANCEL_SPREAD"]
+    assert len(cancels)==1
+    assert cancels[0]["ref_spread_usd_oz"] < -2.0
+    assert cancels[0]["maker_pending_seconds"] > 0
+    assert result["terminal_pending_unfilled"]==0
+    assert not closed and not terminal
