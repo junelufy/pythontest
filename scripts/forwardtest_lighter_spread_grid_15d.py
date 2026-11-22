@@ -370,15 +370,18 @@ def main(argv=None):
                           "open",result["unclosed_grids"],
                           "total_marked_net",result["total_net_including_terminal_mark_usd"],
                           flush=True)
-    def write_csv(path,records):
-        if not records:return
+    def write_csv(path,records,empty_columns):
+        cols=list(records[0]) if records else empty_columns
         with (output/path).open("w",newline="",encoding="utf8") as f:
-            writer=csv.DictWriter(f,fieldnames=list(records[0]))
+            writer=csv.DictWriter(f,fieldnames=cols)
             writer.writeheader()
-            writer.writerows(records)
-    write_csv("tp_2_vs_3_scenarios.csv",rows)
-    write_csv("trades_all_scenarios.csv",all_trades)
-    write_csv("terminal_open_positions.csv",all_terminal)
+            if records:
+                writer.writerows(records)
+    write_csv("tp_2_vs_3_scenarios.csv",rows,["qty_oz_per_grid","tp_gross_usd_per_oz"])
+    write_csv("trades_all_scenarios.csv",all_trades,
+              ["entry_utc","exit_utc","direction","grid","quantity_oz","net_usd"])
+    write_csv("terminal_open_positions.csv",all_terminal,
+              ["entry_utc","marked_at_utc","direction","grid","mark_to_liquidation_net_usd"])
     coverage={
         "test_start_utc":iso(TEST_START),"test_end_exclusive_utc":iso(TEST_END),
         "first_paired_event_utc":iso(events[0][0]),
