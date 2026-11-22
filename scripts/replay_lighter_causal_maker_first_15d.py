@@ -338,6 +338,7 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
                     g.maker_action,g.limit,trade.taker_side,trade.price
                 )
             ]
+            exact=[]
             if eligible:
                 exact=[g for g in eligible if group_key(action,g.limit)==group_key(action,trade.price)]
                 counters["potential_at_or_through_public_prints"]+=1
