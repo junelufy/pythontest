@@ -22,6 +22,7 @@ def package(source, destination):
         report={name:coverage(db,name) for name in ("quotes","candles","funding")}
         report["chunks"]=[dict(zip(("symbol","kind","chunks","rows"),r)) for r in db.execute(
             "select symbol,kind,count(*),sum(rows_count) from chunks group by symbol,kind order by symbol,kind")]
+        report["history_gaps"]=[dict(zip(("symbol","kind","requested_start_ms","actual_start_ms","end_ms","reason"),r)) for r in db.execute("select symbol,kind,requested_start_ms,actual_start_ms,end_ms,reason from history_gaps order by requested_start_ms")] if db.execute("select 1 from sqlite_master where type='table' and name='history_gaps'").fetchone() else []
         quotes=sample_csv(db,"select * from quotes order by ts_ms desc,symbol limit 200")
         candles=sample_csv(db,"select * from candles order by ts_ms desc,symbol limit 50")
         funding=sample_csv(db,"select * from funding order by ts_ms desc,symbol limit 20")
