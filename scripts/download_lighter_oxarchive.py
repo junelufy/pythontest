@@ -61,7 +61,7 @@ def get(path, params, key):
                 except (ValueError,TypeError):
                     payload={}
                 if payload.get("error_code")=="history_window_exceeded":
-                    match=re.search(r"earliest allowed timestamp\s+([0-9TZ:.+\-]+)",payload.get("error",""))
+                    match=re.search(r"earliest allowed timestamp\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)",payload.get("error",""))
                     if not match:
                         raise RuntimeError("History boundary error without a parsable timestamp: "+message) from None
                     raise HistoryWindowExceeded(timestamp(match.group(1)),message) from None
