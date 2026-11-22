@@ -6,9 +6,9 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from workbench.data import symbols,candles,synthetic
+from workbench.data import symbols,candles,synthetic,symbols_from_path,candles_from_path
 from workbench.engine import open_position,close_position,PendingOrder,limit_touch
-from workbench.quotes import read_quotes,quote_at
+from workbench.quotes import read_quotes,quote_at,read_quotes_from_path
 
 st.set_page_config(page_title="Trading Backtest Workstation",layout="wide")
 st.title("Historical Manual Trading Workstation")
@@ -81,14 +81,15 @@ with st.sidebar:
         try:
             if blob is None:
                 p=Path(local).expanduser()
-                if not p.is_file() or p.stat().st_size>300_000_000:raise ValueError("File unavailable or >300 MB")
-                blob=p.read_bytes()
-            available=symbols(filename,blob)
+                if not p.is_file():raise ValueError("File unavailable")
+                available=symbols_from_path(p)
+            else:
+                available=symbols(filename,blob)
             selected=st.selectbox("Source symbol",available)
             alias=st.text_input("Asset alias (for formulas)",selected.replace("/","_").replace("-","_"))
             if st.button("Load asset"):
                 if not alias.isidentifier():raise ValueError("Use a valid alias such as XAU or PAXG")
-                assets[alias]=candles(filename,blob,selected)
+                assets[alias]=candles_from_path(p,selected) if blob is None else candles(filename,blob,selected)
                 reset()
                 st.success("Loaded "+alias)
         except Exception as err:st.error(str(err))
@@ -98,11 +99,13 @@ with st.sidebar:
         st.subheader("Historical Bid / Ask")
         st.caption("Optional top-of-book snapshots, not current live quotes. Columns: ts_ms,symbol,bid,ask,bid_size,ask_size. Sizes must be in asset units.")
         book_upload=st.file_uploader("Import quotes CSV / ZIP / Parquet / SQLite",type=["csv","zip","parquet","sqlite3","db"],key="book_upload")
+        book_local=st.text_input("Or local historical quotes file path (read-only)",value=local if Path(local).suffix.lower() in (".sqlite3",".db",".sqlite") else "",key="book_local")
         book_symbol=st.selectbox("Load quotes for asset",list(assets),key="book_symbol")
         book_filter=st.text_input("Source symbol in file (empty = all)",value=book_symbol,key="book_filter")
-        if book_upload is not None and st.button("Load historical Bid/Ask"):
+        if (book_upload is not None or book_local.strip()) and st.button("Load historical Bid/Ask"):
             try:
-                qdf=read_quotes(book_upload.name,book_upload.getvalue(),book_filter.strip() or None)
+                qdf=(read_quotes(book_upload.name,book_upload.getvalue(),book_filter.strip() or None)
+                     if book_upload is not None else read_quotes_from_path(book_local,book_filter.strip() or None))
                 S.books[book_symbol]=qdf
                 st.success(f"Loaded {len(qdf):,} historical quote snapshots for {book_symbol}")
             except Exception as exc:st.error(str(exc))
