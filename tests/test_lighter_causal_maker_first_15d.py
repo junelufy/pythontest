@@ -37,7 +37,7 @@ def test_partial_maker_fill_hedged_only_after_future_xau_book():
     result,closed,terminal=run_scenario(x,p,trades,ZONES,.5,2.)
     assert result["paxg_maker_orders_posted"]==1
     assert result["maker_orders_with_any_public_trade_allocated"]==1
-    assert result["maker_matched_public_volume_oz"]==.1
+    assert result["maker_assumed_fill_quantity_oz"]==.1
     assert result["xau_hedges_executed"]==1
     assert result["tp_closed_positions"]==1
     assert not terminal
@@ -79,7 +79,7 @@ def test_three_grid_orders_share_public_print_volume_and_queue_ahead():
     assert r["paxg_maker_orders_posted"]==3
     # 0.5 oz quote-ahead consumed; 0.1 oz allocated to exactly one order.
     assert r["maker_orders_with_any_public_trade_allocated"]==1
-    assert r["maker_matched_public_volume_oz"]==.1
+    assert r["maker_assumed_fill_quantity_oz"]==.1
     assert abs(sum(t["qty_oz"] for t in closed) - .1) < 1e-9
     # Final XAU bid=5000 and PAXG bid=5001.2 -> SHORT ref=-1.2.
     # This is below levels P90=-1 and P95=0: both remaining makers
@@ -99,7 +99,7 @@ def test_shared_queue_other_grids_remain_pending_if_short_spread_stays_in_zone()
     r,closed,terminal=run_scenario(x,p,tape,zones,.5,2.)
     assert r["paxg_maker_orders_posted"]==3
     assert r["maker_orders_with_any_public_trade_allocated"]==1
-    assert abs(r["maker_matched_public_volume_oz"]-.1)<1e-9
+    assert abs(r["maker_assumed_fill_quantity_oz"]-.1)<1e-9
     assert r["maker_orders_canceled_on_spread_reversion"]==0
     assert r["terminal_pending_unfilled"]==2
     assert r["terminal_open_hedged_grids"]==1
@@ -220,7 +220,7 @@ def test_price_through_buy_maker_fills_and_waits_for_next_xau_hedge():
     assert result["potential_exact_price_public_prints"]==0
     assert result["maker_orders_with_any_public_trade_allocated"]==1
     assert result["maker_through_price_order_full_fills_assumed"]==1
-    assert result["maker_matched_public_volume_oz"]==.5
+    assert result["maker_assumed_fill_quantity_oz"]==.5
     assert result["xau_hedges_executed"]==1
     assert result["tp_closed_positions"]==0
     assert not closed and len(terminal)==1
@@ -241,7 +241,7 @@ def test_price_through_sell_maker_fills_on_aggressive_buy_above_limit():
     assert r["maker_through_price_order_full_fills_assumed"]==1
     assert r["xau_hedges_executed"]==1
     assert r["terminal_open_hedged_grids"]==1
-    assert r["maker_matched_public_volume_oz"]==.5
+    assert r["maker_assumed_fill_quantity_oz"]==.5
     assert closed==[]
     assert len(terminal)==1
 
@@ -256,7 +256,7 @@ def test_three_grid_price_through_does_not_double_count_public_trade_volume():
     # It is not treating 0.01 as available size for three distinct orders.
     assert r["paxg_maker_orders_posted"]==3
     assert r["maker_through_price_order_full_fills_assumed"]==3
-    assert r["maker_matched_public_volume_oz"]==1.5
+    assert r["maker_assumed_fill_quantity_oz"]==1.5
     assert r["xau_hedges_executed"]==3
     assert r["tp_closed_positions"]==0
     assert closed==[]
