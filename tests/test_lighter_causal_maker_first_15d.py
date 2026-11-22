@@ -365,3 +365,24 @@ def test_wrong_aggressor_price_through_does_not_execute_passive_buy():
     assert r["xau_hedges_executed"]==0
     assert r["terminal_pending_unfilled"]==1
     assert closed==[] and terminal==[]
+
+
+
+def test_one_minute_asynchronous_books_20_second_vs_60_second_coverage():
+    t=TEST_START
+    x=[book(t,5000),book(t+60000,5000)]
+    p=[book(t+45000,5003),book(t+105000,4999)]
+    narrow,nt,_=run_scenario(
+        x,p,[],ZONES,.5,2.,max_quote_age_ms=20_000
+    )
+    wider,wt,_=run_scenario(
+        x,p,[],ZONES,.5,2.,max_quote_age_ms=60_000
+    )
+    assert narrow["max_cross_market_quote_age_s"]==20
+    assert wider["max_cross_market_quote_age_s"]==60
+    assert narrow["paxg_maker_orders_posted"]==0
+    assert wider["paxg_maker_orders_posted"]==1
+    assert wider["terminal_pending_unfilled"]==1
+    assert narrow["maker_orders_with_any_public_trade_allocated"]==0
+    assert wider["maker_orders_with_any_public_trade_allocated"]==0
+    assert not nt and not wt
