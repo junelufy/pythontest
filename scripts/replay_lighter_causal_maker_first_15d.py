@@ -175,15 +175,15 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
     max_dd=0.0
     total_entry_fees=0.0
     total_exit_fees=0.0
+    maker_fee_paid_unhedged=0.0
     max_hedge_delay_s=0.0
-    gross_hedge_wait_qty_oz=0.0
 
     # Priority in same-millisecond tie: XAU book, PAXG book, then trade.
     # Post at t cannot fill using a print with ts == t; strict > below.
     timeline=sorted(
-        [(b.ts,0,b) for b in xau]+
-        [(b.ts,1,b) for b in paxg]+
-        [(r.ts,2,r) for r in tape],
+        [(b.ts,0,b) for b in xau if TEST_START<=b.ts<TEST_END]+
+        [(b.ts,1,b) for b in paxg if TEST_START<=b.ts<TEST_END]+
+        [(r.ts,2,r) for r in tape if TEST_START<=r.ts<TEST_END],
         key=lambda row:(row[0],row[1])
     )
 
@@ -457,7 +457,7 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0):
         "maker_bps":maker_bps,"taker_bps":taker_bps,
         "paxg_maker_orders_posted":counters["maker_orders_posted"],
         "maker_orders_with_any_public_trade_allocated":counters["maker_print_matched_order_count"],
-        "maker_matched_public_volume_oz":counters["maker_print_matched_volume_milli_oz"]/1000.,
+        "maker_matched_public_volume_oz":round(counters["maker_print_matched_volume_milli_oz"]/1000.,6),
         "partial_maker_fills_hedged":counters["partially_filled_maker_positions"],
         "xau_hedges_executed":counters["xau_hedges_executed"],
         "tp_closed_positions":len(closed),
@@ -498,8 +498,12 @@ def run(data,zones_path,output):
     data=Path(data)
     out=Path(output)
     out.mkdir(parents=True,exist_ok=True)
-    x_times,x_books=read_books(data,"XAU",TEST_START,TEST_END-1)
-    p_times,p_books=read_books(data,"PAXG",TEST_START,TEST_END-1)
+    x_times,x_books_all=read_books(data,"XAU",TEST_START,TEST_END-1)
+    p_times,p_books_all=read_books(data,"PAXG",TEST_START,TEST_END-1)
+    # read_books deliberately includes up to 3 minutes of pre-window history.
+    # Preserve it as as-of context ONLY, never allow old snapshots to POST orders.
+    x_books=[b for b in x_books_all if TEST_START<=b.ts<TEST_END]
+    p_books=[b for b in p_books_all if TEST_START<=b.ts<TEST_END]
     tape,trade_stats=load_taker_tape(data)
     rows=[]
     all_closed=[]
