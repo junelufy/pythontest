@@ -101,7 +101,7 @@ with st.sidebar:
         book_upload=st.file_uploader("Import quotes CSV / ZIP / Parquet / SQLite",type=["csv","zip","parquet","sqlite3","db"],key="book_upload")
         book_local=st.text_input("Or local historical quotes file path (read-only)",value=local if Path(local).suffix.lower() in (".sqlite3",".db",".sqlite") else "",key="book_local")
         book_symbol=st.selectbox("Load quotes for asset",list(assets),key="book_symbol")
-        book_filter=st.text_input("Source symbol in file (empty = all)",value=book_symbol,key="book_filter")
+        book_filter=st.text_input("Source symbol in file (empty = all)",value=book_symbol,key=f"book_filter_{book_symbol}")
         if (book_upload is not None or book_local.strip()) and st.button("Load historical Bid/Ask"):
             try:
                 qdf=(read_quotes(book_upload.name,book_upload.getvalue(),book_filter.strip() or None)
