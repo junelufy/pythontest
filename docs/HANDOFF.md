@@ -37,3 +37,14 @@ Current ZIP review reports:
 - App now loads 30-day SQLite candles and top-of-book via read-only local path `workbench.data.*_from_path`, `workbench.quotes.read_quotes_from_path`. No 300-MB read-all upload limitation for SQLite.
 - MVP **does not yet use full L2 depth, executable VWAP, synchronized multi-leg orders, maker queue, or self-volume depletion**. Existing quote-based Market behavior is best-level only, amount limited by top size. All fills labeled simulated.
 - When building VWAP: use the last book snapshot **not later than** event time, enforce max age, check both books' timestamps, reject insufficient cumulative executable depth, and deplete depth across simultaneous grid legs. Do not treat pending maker as filled merely because a 1m candle touched the price. Prevent look-ahead and false arbitrage claims.
+
+
+## Verified Lighter trade finalization diagnosis (2026-11-22)
+After user ran `scripts/diagnose_lighter_trade_finalization.py --symbols PAXG --probe`, actual 0xArchive response:
+- Finalized through: **2026-11-18T23:59:59.999Z**
+- Last saved canonical PAXG trade: **2026-11-18T23:59:40.610Z**
+- 11 6-hour PAXG trade windows returned zero rows; the canonical API clamps requests beyond the watermark and can respond with zero despite positive-volume candles.
+- Of 1,349 candle minutes with volume >0 but no canonical trades, **1,344** are Nov 19–21 (647 Nov 19, 342 Nov 20, 355 Nov 21) after the finalization watermark; 5 minutes on Oct 23 still merit separate investigation of the rolling free-plan start boundary.
+- These 1,344 are **not proven no-trade**; canonical archive is not yet published through those times. Historical L2/candles can remain valid independently. Preserve original raw files and provenance.
+- API `/v1/lighter/trades/{symbol}/recent` gives newest preliminary feed rows, **not** a guaranteed paginated 3-day full historical tape. Do not merge into canonical trade archives or claim reconciliation. Native Lighter free S3 daily Parquet is an independent alternative for verifying complete historical trade days.
+- For any maker/taker fill inference, use canonical trades only through `finalized_through`; L2 minute snapshots cannot verify order queue position. When watermark advances, targeted finalized backfill should replace only previously empty/incomplete trade windows, preserving a provenance audit, never regenerate 30 days of unrelated data.
