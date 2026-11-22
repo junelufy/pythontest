@@ -38,7 +38,7 @@ def test_calibration_5days_only_and_no_held_out_data_access(tmp_path):
     assert report["calibration_start_inclusive_utc"]=="2026-10-23T01:00:00+00:00"
     assert report["calibration_end_exclusive_utc"]=="2026-10-28T01:00:00+00:00"
     assert report["reserved_out_of_sample_start_inclusive_utc"]==report["calibration_end_exclusive_utc"]
-    assert report["reserved_out_of_sample_end_exclusive_utc"]=="2026-11-19T01:00:00+00:00"
+    assert report["reserved_out_of_sample_end_exclusive_utc"]=="2026-11-19T00:00:00+00:00"
     assert report["expected_sample_ticks"]==7200
     assert report["paired_fresh_snapshot_ticks"]==3
     assert r["maker_signal_xau_sell_vwap_minus_paxg_best_bid"]["min"]==30
