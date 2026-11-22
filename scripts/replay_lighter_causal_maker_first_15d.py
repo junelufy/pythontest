@@ -177,9 +177,9 @@ def maker_print_at_or_through(maker_action, maker_limit, taker_side, trade_price
 
 
 def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
-                 event_log=None):
+                 event_log=None, max_quote_age_ms=MAX_XAU_QUOTE_AGE_MS):
     """Chronological single-scenario replay; all six grids share the same book."""
-    assert qty>0 and tp in (2.,3.)
+    assert qty>0 and tp in (2.,3.) and max_quote_age_ms>0
     states={f"{side}_{label}":State(side,label,level)
             for side in ("short","long") for label,level in zones[side]}
     groups={}
@@ -295,7 +295,7 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
             # Evaluate pending spread cancellation on a fresh XAU update too,
             # not just PAXG updates. Never use a stale PAXG book for this.
             if (active_p is not None and
-                0 <= t-active_p.ts <= MAX_PAXG_QUOTE_AGE_MS):
+                0 <= t-active_p.ts <= max_quote_age_ms):
                 cancel_pending_outside_zone(current_reference((t,active_x,active_p),qty), t)
             # ONLY hedge AFTER the maker trade timestamp, from a later XAU L2.
             used={}
@@ -430,7 +430,7 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
         # PAXG source-book event: use the last *past* XAU source book, not a
         # minute-boundary look-ahead or a forward interpolated snapshot.
         active_p=obj
-        if active_x is None or active_x.ts>t or t-active_x.ts>MAX_XAU_QUOTE_AGE_MS:
+        if active_x is None or active_x.ts>t or t-active_x.ts>max_quote_age_ms:
             counters["paxg_books_without_recent_xau"]+=1
             continue
         ev=(t,active_x,active_p)
@@ -574,6 +574,7 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
     count_hedged=sum(s.status=="open" for s in states.values())
     result={
         "qty_per_grid_oz":qty,"tp_gross_usd_per_oz":tp,
+        "max_cross_market_quote_age_s":max_quote_age_ms/1000,
         "maker_bps":maker_bps,"taker_bps":taker_bps,
         "paxg_maker_orders_posted":counters["maker_orders_posted"],
         "maker_orders_with_any_public_trade_allocated":counters["maker_print_matched_order_count"],
@@ -641,6 +642,7 @@ def run(data,zones_path,output):
     all_closed=[]
     all_terminal=[]
     audit_log=[]
+    audit_log_age60=[]
     for quantity in (0.5,1.0):
         zones=load_frozen_zones(zones_path,quantity)
         print("FROZEN_ZONES",quantity,zones,flush=True)
@@ -650,22 +652,57 @@ def run(data,zones_path,output):
                              and fee_label=="standard" else None)
                 summary,closed,terminal=run_scenario(
                     x_books,p_books,tape,zones,quantity,tp,m_bps,t_bps,
-                    event_log=diagnostics
+                    event_log=diagnostics, max_quote_age_ms=20_000
                 )
                 summary["fee_profile"]=fee_label
                 rows.append(summary)
-                all_closed.extend([{"fee_profile":fee_label,**summary_fields,**r}
-                                   for r in closed
-                                   for summary_fields in [{"qty_per_grid_oz":quantity,
-                                                           "tp_gross_usd_per_oz":tp}]])
+                all_closed.extend([
+                    {"fee_profile":fee_label,"qty_per_grid_oz":quantity,
+                     "tp_gross_usd_per_oz":tp,"max_cross_market_quote_age_s":20,**r}
+                    for r in closed
+                ])
                 all_terminal.extend([{"fee_profile":fee_label,"qty_per_grid_oz":quantity,
-                                      "tp_gross_usd_per_oz":tp,**r} for r in terminal])
+                                      "tp_gross_usd_per_oz":tp,
+                                      "max_cross_market_quote_age_s":20,**r}
+                                     for r in terminal])
                 print("CAUSAL_SCENARIO",quantity,tp,fee_label,
                       "maker_posted",summary["paxg_maker_orders_posted"],
                       "maker_matched",summary["maker_orders_with_any_public_trade_allocated"],
                       "tp_closed",summary["tp_closed_positions"],
                       "total_marked",summary["total_net_with_terminal_liquidation_usd"],
                       flush=True)
+    # Second, explicitly labeled clock-freshness sensitivity on 1-minute L2.
+    # DO NOT select the better P&L; this is not a new optimized strategy.
+    for quantity in (0.5,1.0):
+        frozen=load_frozen_zones(zones_path,quantity)
+        for tp in (2.0,3.0):
+            for fee_label,(m_bps,t_bps) in FEE_PROFILES.items():
+                diagnostics=(audit_log_age60 if quantity==0.5 and tp==2.0
+                             and fee_label=="standard" else None)
+                scenario,closed,terminal=run_scenario(
+                    x_books,p_books,tape,frozen,quantity,tp,m_bps,t_bps,
+                    event_log=diagnostics,max_quote_age_ms=60_000
+                )
+                scenario["fee_profile"]=fee_label
+                rows.append(scenario)
+                all_closed.extend([
+                    {"fee_profile":fee_label,"qty_per_grid_oz":quantity,
+                     "tp_gross_usd_per_oz":tp,"max_cross_market_quote_age_s":60,**r}
+                    for r in closed
+                ])
+                all_terminal.extend([
+                    {"fee_profile":fee_label,"qty_per_grid_oz":quantity,
+                     "tp_gross_usd_per_oz":tp,"max_cross_market_quote_age_s":60,**r}
+                    for r in terminal
+                ])
+                print("QUOTE_AGE_SENSITIVITY",quantity,tp,fee_label,
+                      "max_age_s",60,"maker_posted",scenario["paxg_maker_orders_posted"],
+                      "paper_fills",scenario["maker_orders_with_any_public_trade_allocated"],
+                      "tp_closes",scenario["tp_closed_positions"],
+                      "marked_net",scenario["total_net_with_terminal_liquidation_usd"],
+                      flush=True)
+    write_csv(out/"maker_order_evidence_age60.csv",audit_log_age60,
+              ["time_utc","type","direction","grid","grid_level","maker_limit"])
     write_csv(out/"causal_tp2_tp3_scenarios.csv",rows,
               ["qty_per_grid_oz","tp_gross_usd_per_oz","fee_profile"])
     write_csv(out/"causal_closed_trades.csv",all_closed,
@@ -682,7 +719,8 @@ def run(data,zones_path,output):
         "execution":{
             "maker_order_time_to_live_seconds":None,
             "maker_pending_cancel_rule":"SHORT when executable short maker-reference spread < frozen grid level; LONG when executable long maker-reference spread > frozen grid level; require fresh L2. Never cancel solely because 5 minutes elapsed.",
-            "max_xau_quote_age_on_entry_exit_seconds":MAX_XAU_QUOTE_AGE_MS/1000,
+            "quote_age_sensitivity_seconds":[20,60],
+            "quote_age_interpretation":"20 seconds excludes most one-minute PAXG snapshots; 60 seconds is a stale-quote upper-coverage sensitivity, NOT independently executable price verification.",
             "paxg_maker_limit":"current PAXG best bid for BUY; best ask for SELL",
             "pending_queue":"visible best-level quantity ahead + FIFO across our grids at same price",
             "public_prints":"deduplicated by match trade_id; only crossed=true TAKER leg; exact maker limit trades consume queue and order size, while trades strictly through limit imply earlier posted better-priced makers fully executed.",
@@ -714,6 +752,7 @@ def run(data,zones_path,output):
             "Min order size for partial PAXG/XAU hedge must be checked before claiming executable partial fills.",
             "Public aggressive trade records were selected from crossed=true account leg and match ID deduplicated; absent prints may reflect incomplete archive coverage.",
             "Different size, TP and fee scenarios represent independent hypothetical accounts; never sum their results.",
+            "20sec and 60sec freshness rows are separate alternative simulations of the same historical tape; never add or optimize by comparing net results.",
         ],
         "scenarios":rows,
     }
