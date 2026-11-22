@@ -12,6 +12,7 @@ from plotly.subplots import make_subplots
 def create_chart(summary_path, samples_path, output_path):
     report = json.loads(Path(summary_path).read_text(encoding="utf8"))
     by_qty = report["by_order_quantity"]
+    days = int(report["calibration_days"])
     quantities = list(by_qty)
     rows = {q: [] for q in quantities}
     with Path(samples_path).open(newline="", encoding="utf8") as inp:
@@ -22,7 +23,7 @@ def create_chart(summary_path, samples_path, output_path):
     fig = make_subplots(
         rows=2, cols=1, row_heights=[0.65,0.35], vertical_spacing=0.16,
         subplot_titles=("Entry spreads by time — SHORT upper tail / LONG lower tail",
-                        "First-five-day distribution of executable spread ($/oz)"),
+                        f"First-{days}-day distribution of executable spread ($/oz)"),
     )
     scenarios = [
         ("short_maker", "SHORT spread / PAXG maker BUY", "maker_entry_signal_usd_oz"),
@@ -55,7 +56,7 @@ def create_chart(summary_path, samples_path, output_path):
         high = s["maker_signal_xau_sell_vwap_minus_paxg_best_bid"]["percentiles"]
         low = s["long_maker_signal_xau_buy_vwap_minus_paxg_best_ask"]["percentiles"]
         titles[qty] = (
-            f"Five-day XAU−PAXG zones · {qty} oz | SHORT upper P90={high.get('90')}, "
+            f"{days}-day XAU−PAXG zones · {qty} oz | SHORT upper P90={high.get('90')}, "
             f"P95={high.get('95')} | LONG lower P5={low.get('5')}, "
             f"P10={low.get('10')} $/oz"
         )
