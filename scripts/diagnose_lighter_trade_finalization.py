@@ -35,6 +35,8 @@ def inspect(base,symbol,probe=False):
     files=sorted((base/"trades"/symbol).glob("*.jsonl.gz"))
     min_ts=max_ts=None
     source_counts=Counter()
+    trade_id_legs=Counter()
+    no_trade_id=0
     nrows=0
     for file in files:
         with gzip.open(file,"rt",encoding="utf8") as src:
@@ -46,6 +48,11 @@ def inspect(base,symbol,probe=False):
                 max_ts=ts if max_ts is None else max(max_ts,ts)
                 trade_minutes[ts//60000]+=1
                 source_counts[str(row.get("source","missing"))]+=1
+                tid=row.get("trade_id",row.get("tid"))
+                if tid is not None:
+                    trade_id_legs[str(tid)]+=1
+                else:
+                    no_trade_id+=1
                 nrows+=1
     unpaired=sorted(m for m,v in candles.items() if v is not None and v>0 and m not in trade_minutes)
     daily=Counter(iso(m*60000)[:10] for m in unpaired)
@@ -61,6 +68,11 @@ def inspect(base,symbol,probe=False):
         "symbol":symbol,"raw_trade_rows":nrows,
         "first_raw_trade_utc":iso(min_ts),"last_raw_trade_utc":iso(max_ts),
         "raw_trade_source_counts":dict(source_counts),
+        "rows_with_trade_id":nrows-no_trade_id,
+        "rows_without_trade_id":no_trade_id,
+        "distinct_trade_ids":len(trade_id_legs),
+        "fill_legs_per_trade_id":dict(Counter(trade_id_legs.values())),
+        "interpretation":"Historical Lighter trade rows are individual fill legs; a matched trade can have two legs with the same trade_id. Do not sum both sides for traded volume.",
         "total_trade_chunks":len(chunks),"zero_row_trade_chunks":len(empty_chunks),
         "zero_row_chunk_details":empty_chunks,
         "positive_candle_minutes_without_raw_trade":len(unpaired),
