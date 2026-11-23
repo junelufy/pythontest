@@ -45,6 +45,7 @@ jobs:
           python -m py_compile scripts/download_lighter_l2_1s_full.py
           python -m py_compile scripts/audit_lighter_l2_1s_source.py
           python -m py_compile scripts/replay_lighter_1s_frozen_tp2_tp3.py
+          bash -n scripts/run_lighter_1s_tp2_tp3_wsl.sh
       - name: Run golden maker-first fixtures
         run: python -m pytest -q tests/test_lighter_causal_maker_first_15d.py tests/test_collect_lighter_targeted_1s_l3.py tests/test_download_lighter_l2_1s_full.py tests/test_audit_lighter_l2_1s_source.py tests/test_replay_lighter_1s_frozen_tp2_tp3.py
       - name: Publish fixture status to commit
