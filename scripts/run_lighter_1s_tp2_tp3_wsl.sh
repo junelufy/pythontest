@@ -28,7 +28,9 @@ python3 -m zipfile -c "$DEST" \
   "$OUT/scenarios_1s.csv" \
   "$OUT/closed_trades_1s.csv" \
   "$OUT/terminal_positions_1s.csv" \
-  "$OUT/maker_event_audit_1s.csv"
+  "$OUT/maker_event_audit_1s.csv" \
+  "$OUT/invalid_book_evidence_1s.csv"
+echo "Included invalid_book_evidence_1s.csv and source book-integrity counts in summary_1s.json"
 echo "Upload this results ZIP to ChatGPT:"
 echo "C:\Users\June-ASUS\Downloads\LIGHTER_1S_CAUSAL_TP2_TP3_RESULTS.zip"
 echo "HISTORICAL REPLAY ONLY. Not actual live forward test or proven maker executions."
