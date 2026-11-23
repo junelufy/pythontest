@@ -10,7 +10,7 @@ import pytest
 from scripts.analyze_lighter_spread_feasibility import Book, ms
 from scripts.replay_lighter_causal_maker_first_15d import Tape, run_scenario
 from scripts.replay_lighter_1s_frozen_tp2_tp3 import (
-    fees_for_trade,derive_fee_profiles,iter_books,merge_timeline
+    InvalidBook,fees_for_trade,derive_fee_profiles,iter_books,merge_timeline
 )
 
 T=ms("2026-11-04T01:00:00Z")
@@ -105,3 +105,69 @@ def test_stream_books_and_merge_utc_order(tmp_path):
         (1000,0),(1000,1),(2000,0),(2000,1),(2000,2),(3000,0),(3000,1)]
     assert counts["XAU_parsed"]==3
     assert counts["PAXG_parsed"]==3
+
+
+def test_crossed_source_is_quarantined_and_raw_manifest_count_is_preserved(tmp_path):
+    folder = tmp_path / "l2_1s" / "PAXG"
+    folder.mkdir(parents=True)
+    path = folder / "part.jsonl.gz"
+    source_rows = [
+        {"timestamp": T + 1000, "bids": [[4999., 2.]], "asks": [[4999.1, 2.]]},
+        {"timestamp": T + 2000, "bids": [[5001., 2.]], "asks": [[5000., 2.]]},
+        {"timestamp": T + 3000, "bids": [[4999., 2.]], "asks": [[4999.1, 2.]]},
+    ]
+    with gzip.open(path, "wt") as f:
+        for row in source_rows:
+            f.write(json.dumps(row) + "\n")
+    records = [{"start": "2026-11-04T01:00:00Z",
+                "end": "2026-11-04T01:15:00Z",
+                "file": path.name, "row_count": "3"}]
+    counters = Counter()
+    rejected = []
+    rows = list(iter_books(tmp_path, "PAXG", records, counters, rejects=rejected))
+    assert len(rows) == 3
+    assert isinstance(rows[1], InvalidBook)
+    assert rows[1].ts == T + 2000
+    assert counters["PAXG_rows_seen"] == 3
+    assert counters["PAXG_parsed"] == 2
+    assert counters["PAXG_rejected"] == counters["PAXG_crossed"] == 1
+    assert rejected[0]["reject_reason"] == "Crossed order book"
+    assert rejected[0]["timestamp_utc"].startswith("2026-11-04T01:00:02")
+
+
+def test_invalid_xau_tombstone_blocks_stale_quote_and_resets_entry_arm():
+    x = book(T, 5000.)
+    p_out = book(T + 1000, 5003.)
+    p_in = book(T + 3000, 4999.)
+    x_next = book(T + 4000, 5000.)
+    p_next = book(T + 5000, 4999.)
+    zone = {"short": [("P75", -2.)], "long": []}
+    normal = [(T, 0, x), (T + 1000, 1, p_out),
+              (T + 3000, 1, p_in), (T + 4000, 0, x_next),
+              (T + 5000, 1, p_next)]
+    baseline, _, _ = run_scenario([], [], [], zone, .5, 2.,
+                                  max_quote_age_ms=None,
+                                  timeline_override=iter(normal))
+    assert baseline["paxg_maker_orders_posted"] == 1
+    invalid = [(T, 0, x), (T + 1000, 1, p_out),
+               (T + 2000, 0, None), (T + 3000, 1, p_in),
+               (T + 4000, 0, x_next), (T + 5000, 1, p_next)]
+    result, _, _ = run_scenario([], [], [], zone, .5, 2.,
+                                max_quote_age_ms=None,
+                                timeline_override=iter(invalid))
+    assert result["paxg_maker_orders_posted"] == 0
+
+
+def test_invalid_paxg_does_not_cancel_already_pending_order():
+    zone = {"short": [("P75", -2.)], "long": []}
+    events = [(T, 0, book(T, 5000.)),
+              (T + 1000, 1, book(T + 1000, 5003.)),
+              (T + 2000, 1, book(T + 2000, 4999.)),
+              (T + 3000, 1, None),
+              (T + 4000, 1, book(T + 4000, 4999.))]
+    result, _, _ = run_scenario([], [], [], zone, .5, 2.,
+                                max_quote_age_ms=None,
+                                timeline_override=iter(events))
+    assert result["paxg_maker_orders_posted"] == 1
+    assert result["maker_orders_canceled_on_spread_reversion"] == 0
+    assert result["terminal_pending_unfilled"] == 1
