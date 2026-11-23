@@ -16,6 +16,7 @@ import hashlib
 import heapq
 import json
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 from scripts.analyze_lighter_spread_feasibility import parse_book, ms, iso
@@ -30,6 +31,15 @@ FIRST = "2026-11-04T01:00:00Z"
 END = "2026-11-19T00:00:00Z"
 CHUNKS_PER_SYMBOL = 1436
 EXPECTED_SYMBOLS = ("XAU", "PAXG")
+MAX_INVALID_SAMPLES = 500
+
+
+@dataclass(frozen=True)
+class InvalidBook:
+    """A raw source book that cannot be executed; invalidate its old as-of quote."""
+    ts: int
+    reason: str
+
 
 
 def hash_file(file):
@@ -94,43 +104,95 @@ def get_manifest(source):
                      "quality_note":"Expected 1 missing interval-start second per chunk; verified 10 spot samples separately"}
 
 
-def iter_books(source, symbol, records, counters):
-    last = None
+def iter_books(source, symbol, records, counters, rejects=None):
+    """Stream all *raw* rows; invalid L2 gets a tombstone, not a stale last quote.
+
+    JSON/time/order/manifest errors remain fatal. Crossed/empty/malformed book
+    prices are quarantined and counted, never repaired or used for trading.
+    """
+    last_raw = None
+    last_valid = None
     for row in records:
         lo, hi = ms(row["start"]), ms(row["end"])
         path = source / "l2_1s" / symbol / Path(row["file"]).name
         seen = 0
         with gzip.open(path, "rt", encoding="utf8") as f:
-            for line in f:
+            for lineno, line in enumerate(f, 1):
                 if not line.strip():
                     continue
                 obj = json.loads(line)
-                book = parse_book(obj)
-                if not lo <= book.ts < hi:
-                    raise ValueError(f"Out-of-window {symbol} 1s book in {path}")
-                if last is not None:
-                    if book.ts <= last:
-                        raise ValueError(f"Out-of-order/duplicate {symbol} 1s book: {iso(book.ts)}")
-                    gap = (book.ts-last)/1000
-                    if gap > 2:
-                        counters[symbol+"_gaps_over_2s"] += 1
-                    counters[symbol+"_largest_gap_ms"] = max(
-                        counters[symbol+"_largest_gap_ms"], book.ts-last
+                ts = ms(obj["timestamp"])
+                if not lo <= ts < hi:
+                    raise ValueError(f"Out-of-window {symbol} 1s book in {path}:{lineno}")
+                if last_raw is not None:
+                    if ts <= last_raw:
+                        raise ValueError(f"Out-of-order/duplicate {symbol} raw 1s book: {iso(ts)}")
+                    gap_ms = ts - last_raw
+                    if gap_ms > 2000:
+                        counters[symbol + "_raw_gaps_over_2s"] += 1
+                    counters[symbol + "_largest_raw_gap_ms"] = max(
+                        counters[symbol + "_largest_raw_gap_ms"], gap_ms
                     )
-                last = book.ts
+                last_raw = ts
                 seen += 1
-                counters[symbol+"_parsed"] += 1
+                counters[symbol + "_rows_seen"] += 1
+                try:
+                    book = parse_book(obj)
+                except (ValueError, TypeError, KeyError) as exc:
+                    reason = str(exc)
+                    counters[symbol + "_rejected"] += 1
+                    counters[symbol + ("_crossed" if reason == "Crossed order book"
+                                        else "_other_invalid")] += 1
+                    if rejects is not None:
+                        if len(rejects) < MAX_INVALID_SAMPLES:
+                            def first_price(name):
+                                levels = obj.get(name, [])
+                                if not isinstance(levels, list) or not levels:
+                                    return None
+                                level = levels[0]
+                                if isinstance(level, dict):
+                                    return level.get("px", level.get("price"))
+                                return level[0] if isinstance(level, (list, tuple)) and level else None
+                            rejects.append({
+                                "symbol": symbol, "timestamp_utc": iso(ts),
+                                "filename": path.name, "line_number": lineno,
+                                "raw_first_bid": first_price("bids"),
+                                "raw_first_ask": first_price("asks"),
+                                "reject_reason": reason,
+                                "action": "INVALIDATE_QUOTE_UNTIL_NEXT_VALID_BOOK",
+                            })
+                        if counters[symbol + "_rejected"] <= 5:
+                            print("INVALID_1S_BOOK", symbol, iso(ts), repr(reason),
+                                  "in", path.name, "line", lineno, flush=True)
+                    yield InvalidBook(ts, reason)
+                    continue
+                if book.ts != ts:
+                    raise AssertionError("Inconsistent source timestamp conversion")
+                if last_valid is not None:
+                    valid_gap = ts - last_valid
+                    if valid_gap > 2000:
+                        counters[symbol + "_valid_gaps_over_2s"] += 1
+                    counters[symbol + "_largest_valid_gap_ms"] = max(
+                        counters[symbol + "_largest_valid_gap_ms"], valid_gap
+                    )
+                last_valid = ts
+                counters[symbol + "_parsed"] += 1
                 yield book
         if seen != int(row["row_count"]):
-            raise ValueError(f"1s {symbol} row count changed since download: {path}")
+            raise ValueError(f"1s {symbol} RAW row count changed since download: {path}")
 
 
-def merge_timeline(source, records, tape, counters):
-    xevents = ((b.ts, 0, b) for b in iter_books(source, "XAU", records["XAU"], counters))
-    pevents = ((b.ts, 1, b) for b in iter_books(source, "PAXG", records["PAXG"], counters))
+def merge_timeline(source, records, tape, counters, rejects=None):
+    def book_events(symbol, kind):
+        for row in iter_books(source, symbol, records[symbol], counters, rejects=rejects):
+            # Tombstone at the ORIGINAL timestamp. The engine clears active
+            # quote until the next valid update; no forward fill across bad data.
+            yield row.ts, kind, None if isinstance(row, InvalidBook) else row
+
+    xevents = book_events("XAU", 0)
+    pevents = book_events("PAXG", 1)
     tevents = ((t.ts, 2, t) for t in tape)
-    # At identical timestamp, XAU book then PAXG book then trade; maker posted
-    # at same timestamp cannot match the same print (strict later requirement).
+    # At identical timestamp: XAU (including invalidation), PAXG, then tape.
     return heapq.merge(xevents, pevents, tevents, key=lambda item: (item[0], item[1]))
 
 
@@ -193,6 +255,8 @@ def run(source, old_source, zones_file, output):
         raise RuntimeError("PAXG public trade tape is empty")
     out.mkdir(parents=True, exist_ok=True)
     scenarios=[]
+    invalid_evidence = []
+    reference_parse_quality = None
     all_closed=[]
     all_terminal=[]
     all_events=[]
@@ -205,7 +269,10 @@ def run(source, old_source, zones_file, output):
             baseline,closed,terminal=run_scenario(
                 [],[],[],zones,qty,tp,maker_bps=0.,taker_bps=0.,
                 event_log=audit,max_quote_age_ms=None,
-                timeline_override=merge_timeline(source,records,tape,counters)
+                timeline_override=merge_timeline(
+                    source, records, tape, counters,
+                    rejects=invalid_evidence if qty == 0.5 and tp == 2.0 else None
+                )
             )
             for fee_name,(m_bps,t_bps) in FEE_PROFILES.items():
                 summary,trades,positions=derive_fee_profiles(baseline,closed,terminal,m_bps,t_bps)
@@ -226,12 +293,38 @@ def run(source, old_source, zones_file, output):
                       "total_net",summary["total_net_with_terminal_liquidation_usd"],flush=True)
             if audit is not None:
                 all_events.extend([{"qty_per_grid_oz":qty,"tp_gross_usd_per_oz":tp,**e} for e in audit])
-            if counters["XAU_parsed"] != quality["snapshots_per_symbol"]["XAU"] or counters["PAXG_parsed"] != quality["snapshots_per_symbol"]["PAXG"]:
-                raise RuntimeError(f"1s source was not fully consumed for qty={qty} tp={tp}")
-            print("SOURCE_PROGRESS",qty,tp,"XAU",counters["XAU_parsed"],
-                  "PAXG",counters["PAXG_parsed"],
-                  "max_gap_ms",counters["XAU_largest_gap_ms"],counters["PAXG_largest_gap_ms"],
-                  "gaps_gt_2s",counters["XAU_gaps_over_2s"],counters["PAXG_gaps_over_2s"],flush=True)
+            parse_quality = {
+                sym: {
+                    "raw_rows": counters[sym + "_rows_seen"],
+                    "valid_books": counters[sym + "_parsed"],
+                    "invalid_books": counters[sym + "_rejected"],
+                    "crossed_books": counters[sym + "_crossed"],
+                    "other_invalid_books": counters[sym + "_other_invalid"],
+                    "raw_gaps_over_2s": counters[sym + "_raw_gaps_over_2s"],
+                    "valid_gaps_over_2s": counters[sym + "_valid_gaps_over_2s"],
+                    "max_raw_gap_ms": counters[sym + "_largest_raw_gap_ms"],
+                    "max_valid_gap_ms": counters[sym + "_largest_valid_gap_ms"],
+                } for sym in EXPECTED_SYMBOLS
+            }
+            for sym in EXPECTED_SYMBOLS:
+                q = parse_quality[sym]
+                if q["raw_rows"] != quality["snapshots_per_symbol"][sym]:
+                    raise RuntimeError(f"Incomplete 1s RAW source for {sym} qty={qty} tp={tp}")
+                if q["raw_rows"] != q["valid_books"] + q["invalid_books"]:
+                    raise AssertionError("Unaccounted invalid data for " + sym)
+            if reference_parse_quality is None:
+                reference_parse_quality = parse_quality
+                quality["book_integrity"] = parse_quality
+                quality["invalid_sample_limit"] = MAX_INVALID_SAMPLES
+                quality["quote_invalidation_policy"] = (
+                    "Crossed/invalid source rows are NOT executed or price-corrected. "
+                    "They invalidate the affected instrument's last as-of quote "
+                    "until a subsequent valid source row. Outstanding hypothetical "
+                    "maker orders are not retrospectively erased."
+                )
+            elif parse_quality != reference_parse_quality:
+                raise RuntimeError("Source parsing quality changed between replay scenarios")
+            print("SOURCE_PROGRESS", qty, tp, "quality", parse_quality, flush=True)
     report={
         "experiment":"1S_HISTORICAL_FORWARD_STYLE_REPLAY_NOT_FRESH_FORWARD_DATA",
         "date_start_utc":FIRST,"date_end_exclusive_utc":END,
@@ -244,6 +337,7 @@ def run(source, old_source, zones_file, output):
             "No user maker order acknowledgments or actual fills; public tape provides hypothetical price-through only.",
             "Even 1s L2 cannot prove microsecond order/cancel/hedge ordering or queue position.",
             "Every 15-minute file boundary lacks its first 1s record; as-of previous valid observation is used.",
+            "Crossed/invalid books invalidate that venue quote (without repairing it); all rejection counts and samples are exported. This may change simulated maker/hedge opportunity.",
             "PAXG public tape uses previous separately downloaded archive. Coverage/quality are as previously supplied.",
             "TP measured GROSS per oz; fees deducted after, unchanged path across fee profiles.",
             "Fee-profile drawdown omitted rather than falsely reusing fee-free result.",
@@ -256,6 +350,9 @@ def run(source, old_source, zones_file, output):
     write_csv(out/"closed_trades_1s.csv",all_closed,["fee_profile","net_usd"])
     write_csv(out/"terminal_positions_1s.csv",all_terminal,["fee_profile","hypothetical_liquidation_net_usd"])
     write_csv(out/"maker_event_audit_1s.csv",all_events,["type","time_utc","grid","direction"])
+    write_csv(out/"invalid_book_evidence_1s.csv", invalid_evidence,
+              ["symbol", "timestamp_utc", "filename", "line_number",
+               "raw_first_bid", "raw_first_ask", "reject_reason", "action"])
     (out/"summary_1s.json").write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding="utf8")
     print("REPORT_1S",out/"summary_1s.json",flush=True)
     return report
