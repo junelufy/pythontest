@@ -301,6 +301,11 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
         last_event_ms=t
         if kind==0:
             active_x=obj
+            if active_x is None:
+                # Explicit invalid L2 snapshot: do not carry older executable XAU
+                # quotes into hedge, spread cancellation, entry or close logic.
+                counters["invalidated_xau_book_events"]+=1
+                continue
             # Evaluate pending spread cancellation on a fresh XAU update too,
             # not just PAXG updates. Never use a stale PAXG book for this.
             if (active_p is not None and
@@ -441,6 +446,11 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
         # PAXG source-book event: use the last *past* XAU source book, not a
         # minute-boundary look-ahead or a forward interpolated snapshot.
         active_p=obj
+        if active_p is None:
+            # Source provided a non-executable book at this timestamp. Neither
+            # keep its previous quote nor cancel any pending order on bad data.
+            counters["invalidated_paxg_book_events"]+=1
+            continue
         if (active_x is None or active_x.ts>t or
             (max_quote_age_ms is not None and t-active_x.ts>max_quote_age_ms)):
             counters["paxg_books_without_recent_xau"]+=1
@@ -537,7 +547,8 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
     terminal=[]
     used={}
     unmarked=0
-    if active_x is None or active_p is None:raise ValueError("No 15-day L2")
+    if last_event_ms is None:
+        raise ValueError("No historical L2/tape events")
     for state in states.values():
         if state.status=="pending":
             counters["pending_unfilled_at_terminal"]+=1
@@ -546,6 +557,10 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
         lot=state.lot
         assert lot is not None
         if state.status=="open":
+            if active_x is None or active_p is None:
+                # Terminal L2 was invalidated. Mark as unvalued, NOT zero P&L.
+                unmarked+=1
+                continue
             res=execute_close(active_x,active_p,state,used)
             if res is None:
                 unmarked+=1
@@ -560,6 +575,9 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
                         "entry_fee_usd":lot.entry_fee,"exit_fee_usd":exf}
         else:
             # No XAU hedge yet: direct PAXG-only exposure, not imaginary pair.
+            if active_p is None:
+                unmarked+=1
+                continue
             pa="buy" if state.direction=="long" else "sell"
             pprice=vwap_slice(active_p,pa,lot.qty,used.get(("PAXG",pa),0.))
             if pprice is None:
