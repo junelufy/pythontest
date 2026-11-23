@@ -555,6 +555,9 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
             exf=taker_fee(xprice,lot.qty,taker_bps)+taker_fee(pprice,lot.qty,taker_bps)
             gross=lot.qty*gross_for_lot(lot,xprice,pprice)
             net=gross-lot.entry_fee-exf
+            cost_basis={"paxg_maker_px":lot.entry_p,"xau_hedge_px":lot.entry_x,
+                        "xau_exit_px":xprice,"paxg_exit_px":pprice,
+                        "entry_fee_usd":lot.entry_fee,"exit_fee_usd":exf}
         else:
             # No XAU hedge yet: direct PAXG-only exposure, not imaginary pair.
             pa="buy" if state.direction=="long" else "sell"
@@ -566,10 +569,15 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
             gross=(lot.entry_p-pprice)*lot.qty if state.direction=="long" else (pprice-lot.entry_p)*lot.qty
             exf=taker_fee(pprice,lot.qty,taker_bps)
             net=gross-maker_fee(lot.entry_p,lot.qty,maker_bps)-exf
+            cost_basis={"paxg_maker_px":lot.entry_p,"xau_hedge_px":None,
+                        "xau_exit_px":None,"paxg_exit_px":pprice,
+                        "entry_fee_usd":maker_fee(lot.entry_p,lot.qty,maker_bps),
+                        "exit_fee_usd":exf}
         terminal.append({
             "direction":state.direction,"grid":state.label,"status":state.status,
             "maker_fill_utc":iso(lot.maker_fill_ms),
             "qty_oz":lot.qty,"gross_usd":gross,"hypothetical_liquidation_net_usd":net,
+            **cost_basis,
         })
     terminal_total=sum(p["hypothetical_liquidation_net_usd"] for p in terminal)
     count_pending=sum(s.status=="pending" for s in states.values())
