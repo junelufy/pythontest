@@ -177,9 +177,13 @@ def maker_print_at_or_through(maker_action, maker_limit, taker_side, trade_price
 
 
 def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
-                 event_log=None, max_quote_age_ms=MAX_XAU_QUOTE_AGE_MS):
-    """Chronological single-scenario replay; all six grids share the same book."""
-    assert qty>0 and tp in (2.,3.) and max_quote_age_ms>0
+                 event_log=None, max_quote_age_ms=MAX_XAU_QUOTE_AGE_MS, timeline_override=None):
+    """Chronological replay. Optional timeline_override allows bounded-memory 1s inputs.
+
+    max_quote_age_ms=None means no arbitrary age cutoff. Source gaps must instead
+    be reported/audited by the caller. The 1s replay uses this explicitly.
+    """
+    assert qty>0 and tp in (2.,3.) and (max_quote_age_ms is None or max_quote_age_ms>0)
     states={f"{side}_{label}":State(side,label,level)
             for side in ("short","long") for label,level in zones[side]}
     groups={}
@@ -208,12 +212,16 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
 
     # Priority in same-millisecond tie: XAU book, PAXG book, then trade.
     # Post at t cannot fill using a print with ts == t; strict > below.
-    timeline=sorted(
-        [(b.ts,0,b) for b in xau if TEST_START<=b.ts<TEST_END]+
-        [(b.ts,1,b) for b in paxg if TEST_START<=b.ts<TEST_END]+
-        [(r.ts,2,r) for r in tape if TEST_START<=r.ts<TEST_END],
-        key=lambda row:(row[0],row[1])
-    )
+    if timeline_override is None:
+        timeline=sorted(
+            [(b.ts,0,b) for b in xau if TEST_START<=b.ts<TEST_END]+
+            [(b.ts,1,b) for b in paxg if TEST_START<=b.ts<TEST_END]+
+            [(r.ts,2,r) for r in tape if TEST_START<=r.ts<TEST_END],
+            key=lambda row:(row[0],row[1])
+        )
+    else:
+        timeline=timeline_override
+    last_event_ms=None
 
     def remove_from_group(gridid):
         # Remove only own remainder; other grids retain queue ahead.
@@ -290,12 +298,14 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
         return total
 
     for t,kind,obj in timeline:
+        last_event_ms=t
         if kind==0:
             active_x=obj
             # Evaluate pending spread cancellation on a fresh XAU update too,
             # not just PAXG updates. Never use a stale PAXG book for this.
             if (active_p is not None and
-                0 <= t-active_p.ts <= max_quote_age_ms):
+                0 <= t-active_p.ts and
+                (max_quote_age_ms is None or t-active_p.ts <= max_quote_age_ms)):
                 cancel_pending_outside_zone(current_reference((t,active_x,active_p),qty), t)
             # ONLY hedge AFTER the maker trade timestamp, from a later XAU L2.
             used={}
@@ -431,7 +441,8 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
         # PAXG source-book event: use the last *past* XAU source book, not a
         # minute-boundary look-ahead or a forward interpolated snapshot.
         active_p=obj
-        if active_x is None or active_x.ts>t or t-active_x.ts>max_quote_age_ms:
+        if (active_x is None or active_x.ts>t or
+            (max_quote_age_ms is not None and t-active_x.ts>max_quote_age_ms)):
             counters["paxg_books_without_recent_xau"]+=1
             continue
         ev=(t,active_x,active_p)
@@ -567,15 +578,15 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
             if state.status!="pending":continue
             outstanding=next((o for g in groups.values() for o in g.orders
                               if o.grid_id==f"{state.direction}_{state.label}"),None)
-            audit_event("PENDING_AT_END",timeline[-1][0],state,
+            audit_event("PENDING_AT_END",last_event_ms,state,
                         maker_limit=outstanding.limit if outstanding else None,
-                        maker_pending_seconds=(timeline[-1][0]-outstanding.placed_ms)/1000
+                        maker_pending_seconds=(last_event_ms-outstanding.placed_ms)/1000
                         if outstanding else None)
     count_unhedged=sum(s.status=="hedge_wait" for s in states.values())
     count_hedged=sum(s.status=="open" for s in states.values())
     result={
         "qty_per_grid_oz":qty,"tp_gross_usd_per_oz":tp,
-        "max_cross_market_quote_age_s":max_quote_age_ms/1000,
+        "max_cross_market_quote_age_s":max_quote_age_ms/1000 if max_quote_age_ms is not None else None,
         "maker_bps":maker_bps,"taker_bps":taker_bps,
         "paxg_maker_orders_posted":counters["maker_orders_posted"],
         "maker_orders_with_any_public_trade_allocated":counters["maker_print_matched_order_count"],
