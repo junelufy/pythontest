@@ -16,7 +16,7 @@ returns outside that grid zone: SHORT cancels when ref < grid, LONG when
 ref > grid. No arbitrary elapsed-time cancellation.
 
 Frozen zones and TP 2/3 USD/oz remain unchanged. No stop loss or timeout for
-HEDGED positions; only pending *unfilled* maker quotes expire after 5 minutes.
+HEDGED positions; pending unfilled makers cancel ONLY on frozen spread reversion.
 """
 import argparse
 import csv
