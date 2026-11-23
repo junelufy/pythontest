@@ -305,6 +305,11 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
                 # Explicit invalid L2 snapshot: do not carry older executable XAU
                 # quotes into hedge, spread cancellation, entry or close logic.
                 counters["invalidated_xau_book_events"]+=1
+                # Any armed crossing observed before a data-quality hole is
+                # no longer a reliable outside-to-inside crossing.
+                for state in states.values():
+                    if state.status=="flat":
+                        state.armed=False
                 continue
             # Evaluate pending spread cancellation on a fresh XAU update too,
             # not just PAXG updates. Never use a stale PAXG book for this.
@@ -450,6 +455,9 @@ def run_scenario(xau,paxg,tape,zones,qty,tp,maker_bps=0.0,taker_bps=0.0,
             # Source provided a non-executable book at this timestamp. Neither
             # keep its previous quote nor cancel any pending order on bad data.
             counters["invalidated_paxg_book_events"]+=1
+            for state in states.values():
+                if state.status=="flat":
+                    state.armed=False
             continue
         if (active_x is None or active_x.ts>t or
             (max_quote_age_ms is not None and t-active_x.ts>max_quote_age_ms)):
